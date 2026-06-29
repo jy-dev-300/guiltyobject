@@ -1,0 +1,7 @@
+{
+  "name": "guiltyobbj-framer-components",
+  "private": true,
+  "dependencies": {
+    "react-slick": "^0.31.0"
+  }
+}

@@ -1,0 +1,10 @@
+/logos
+/photos
+/videos
+/goinfo.txt
+.env
+.env.local
+.env.*.local
+.vercel
+.venv-vbr-clean
+.venv-vbr
