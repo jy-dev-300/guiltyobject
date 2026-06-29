@@ -8,3 +8,4 @@
 .vercel
 .venv-vbr-clean
 .venv-vbr
+/tmp
