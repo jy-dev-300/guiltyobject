@@ -1,5 +1,3 @@
-const { getMemberCart } = require("../../lib/cafe24")
-
 function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Origin", "*")
     res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
@@ -19,38 +17,9 @@ module.exports = async (req, res) => {
         return
     }
 
-    try {
-        const memberId = String(req.query?.memberId || "").trim()
-        const limit = Number(req.query?.limit || 100)
-        const offset = Number(req.query?.offset || 0)
-
-        if (!memberId) {
-            res.status(400).json({
-                ok: false,
-                message:
-                    "Missing required query parameter: memberId. Cafe24's documented cart retrieval API is member-based.",
-            })
-            return
-        }
-
-        const result = await getMemberCart({
-            memberId,
-            limit,
-            offset,
-        })
-
-        res.status(200).json({
-            ok: true,
-            memberId,
-            cart: result.cart,
-        })
-    } catch (error) {
-        res.status(500).json({
-            ok: false,
-            message:
-                error instanceof Error
-                    ? error.message
-                    : "Failed to retrieve Cafe24 cart.",
-        })
-    }
+    res.status(501).json({
+        ok: false,
+        message:
+            "Member cart lookup is not available in this Front API-based backend. Open the native Cafe24 cart URL after syncing items instead.",
+    })
 }
