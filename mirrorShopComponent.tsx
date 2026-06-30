@@ -80,6 +80,7 @@ type FramerImage = {
 }
 
 type CarouselItemControl = {
+    src?: string
     image?: FramerImage
     video?: string
     fullWidth: boolean
@@ -124,6 +125,8 @@ type ShadowCartItem = {
     quantity: number
     title: string
     optionLabel: string
+    priceLabel: string
+    previewImage: string
 }
 
 const defaultCarouselItems: CarouselItemControl[] = []
@@ -174,7 +177,16 @@ function getCarouselItemSource(item: CarouselItemControl): {
     src: string
     alt: string
 } {
+    const legacySrc = item.src?.trim() || ""
     const imageSrc = item.image?.src?.trim() || ""
+
+    if (legacySrc) {
+        return {
+            src: legacySrc,
+            alt: item.image?.alt?.trim() || "",
+        }
+    }
+
     if (imageSrc) {
         return {
             src: imageSrc,
@@ -204,6 +216,7 @@ function joinUrl(baseUrl: string, path: string): string {
 
 const shadowCartStorageKey = "mirror-shop-shadow-cart-v1"
 const shadowCartSyncStorageKey = "mirror-shop-shadow-cart-sync-v1"
+const shadowCartChangeEventName = "mirror-shop-shadow-cart-change"
 
 function readShadowCart(): ShadowCartItem[] {
     if (typeof window === "undefined") return []
@@ -222,6 +235,8 @@ function readShadowCart(): ShadowCartItem[] {
                 quantity: Math.max(1, Math.floor(Number(item?.quantity) || 1)),
                 title: String(item?.title || "").trim(),
                 optionLabel: String(item?.optionLabel || "").trim(),
+                priceLabel: String(item?.priceLabel || "").trim(),
+                previewImage: String(item?.previewImage || "").trim(),
             }))
             .filter((item) => Boolean(item.productNo))
     } catch (_error) {
@@ -236,6 +251,7 @@ function writeShadowCart(items: ShadowCartItem[]) {
         shadowCartStorageKey,
         JSON.stringify(items)
     )
+    window.dispatchEvent(new Event(shadowCartChangeEventName))
 }
 
 function readShadowCartSyncSignature(): string {
@@ -296,6 +312,8 @@ function upsertShadowCartItem(
             quantity: item.quantity + nextItem.quantity,
             title: nextItem.title || item.title,
             optionLabel: nextItem.optionLabel || item.optionLabel,
+            priceLabel: nextItem.priceLabel || item.priceLabel,
+            previewImage: nextItem.previewImage || item.previewImage,
         }
     })
 
@@ -326,6 +344,8 @@ type Cafe24BackendCommerceBridgeProps = {
 type Cafe24GuestCommerceBridgeProps = Cafe24BackendCommerceBridgeProps & {
     productTitle: string
     optionLabel: string
+    priceLabel: string
+    productImageSrc: string
 }
 
 function Cafe24BackendCommerceBridge(props: Cafe24BackendCommerceBridgeProps) {
@@ -530,11 +550,6 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
         lineHeight: bodyLineHeight,
         transition: "opacity 0.2s ease",
     }
-    const halfWidthButtonStyle: React.CSSProperties = {
-        ...buttonStyle,
-        width: "calc(50% - 5px)",
-    }
-
     const syncCartCount = React.useCallback(() => {
         const nextItems = readShadowCart()
         const nextCount = nextItems.reduce(
@@ -553,10 +568,21 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
             if (event.key && event.key !== shadowCartStorageKey) return
             syncCartCount()
         }
+        const handleShadowCartChange = () => {
+            syncCartCount()
+        }
 
         window.addEventListener("storage", handleStorage)
+        window.addEventListener(
+            shadowCartChangeEventName,
+            handleShadowCartChange
+        )
         return () => {
             window.removeEventListener("storage", handleStorage)
+            window.removeEventListener(
+                shadowCartChangeEventName,
+                handleShadowCartChange
+            )
         }
     }, [syncCartCount])
 
@@ -567,10 +593,14 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
             quantity: Math.max(1, Math.floor(props.quantity || 1)),
             title: props.productTitle.trim(),
             optionLabel: props.optionLabel.trim(),
+            priceLabel: props.priceLabel.trim(),
+            previewImage: props.productImageSrc.trim(),
         }),
         [
             props.optionLabel,
+            props.priceLabel,
             props.productNo,
+            props.productImageSrc,
             props.productTitle,
             props.quantity,
             props.variantCode,
@@ -664,10 +694,10 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
             writeShadowCartSyncSignature(nextSignature)
 
             const nextRedirectUrl =
-                result?.cartRedirectUrl ||
-                props.cartRedirectUrl.trim() ||
                 result?.checkoutRedirectUrl ||
-                props.buyNowRedirectUrl.trim()
+                props.buyNowRedirectUrl.trim() ||
+                result?.cartRedirectUrl ||
+                props.cartRedirectUrl.trim()
 
             if (nextRedirectUrl) {
                 window.location.href = nextRedirectUrl
@@ -689,106 +719,6 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
         isConfigured,
         props.backendUrl,
         props.buyNowRedirectUrl,
-        props.cartRedirectUrl,
-    ])
-
-    const handleOpenCart = React.useCallback(async () => {
-        if (!isConfigured || typeof window === "undefined") return
-
-        const existingItems = readShadowCart()
-        const itemsToSync =
-            existingItems.length > 0
-                ? existingItems
-                : upsertShadowCartItem([], currentItem)
-        const nextSignature = getShadowCartSignature(itemsToSync)
-        const lastSyncedSignature = readShadowCartSyncSignature()
-
-        let directRedirectUrl = props.cartRedirectUrl.trim()
-
-        if (!directRedirectUrl) {
-            try {
-                const response = await window.fetch(
-                    joinUrl(props.backendUrl, "/api/cart/urls"),
-                    {
-                        method: "GET",
-                    }
-                )
-                const result = await response
-                    .json()
-                    .catch(() => ({ ok: false }))
-
-                if (response.ok) {
-                    directRedirectUrl =
-                        result?.urls?.cartUrl ||
-                        result?.urls?.checkoutUrl ||
-                        ""
-                }
-            } catch (_error) {
-                directRedirectUrl = ""
-            }
-        }
-
-        if (nextSignature && nextSignature === lastSyncedSignature) {
-            if (directRedirectUrl) {
-                window.location.href = directRedirectUrl
-                return
-            }
-        }
-
-        try {
-            setStatus("submitting")
-            setMessage("")
-
-            const response = await window.fetch(
-                joinUrl(props.backendUrl, "/api/cart/checkout"),
-                {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        items: itemsToSync,
-                    }),
-                }
-            )
-
-            const result = await response
-                .json()
-                .catch(() => ({ ok: false, message: "Invalid JSON" }))
-
-            if (!response.ok) {
-                throw new Error(
-                    result?.message ||
-                        "Cafe24 cart sync failed."
-                )
-            }
-
-            writeShadowCartSyncSignature(nextSignature)
-
-            const nextRedirectUrl =
-                result?.cartRedirectUrl ||
-                directRedirectUrl ||
-                props.cartRedirectUrl.trim()
-
-            if (nextRedirectUrl) {
-                window.location.href = nextRedirectUrl
-                return
-            }
-
-            setStatus("success")
-            setMessage("Cafe24 cart is ready.")
-        } catch (error) {
-            const nextMessage =
-                error instanceof Error
-                    ? error.message
-                    : "Unable to open the Cafe24 cart."
-            setStatus("error")
-            setMessage(nextMessage)
-        }
-    }, [
-        currentItem,
-        isConfigured,
-        props.backendUrl,
         props.cartRedirectUrl,
     ])
 
@@ -819,56 +749,19 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
                 width: `${props.addToCartWidth}%`,
             }}
         >
-            <div
-                style={{
-                    display: "flex",
-                    gap: 10,
-                    width: "100%",
-                }}
-            >
-                <button
-                    type="button"
-                    disabled={status === "submitting"}
-                    onClick={handleAddToShadowCart}
-                    style={{
-                        ...halfWidthButtonStyle,
-                        background: props.addToCartFill,
-                        color: props.addToCartTextColor,
-                        opacity: status === "submitting" ? 0.6 : 1,
-                    }}
-                >
-                    {status === "submitting"
-                        ? "Saving..."
-                        : props.addToCartLabel}
-                </button>
-
-                <button
-                    type="button"
-                    disabled={status === "submitting"}
-                    onClick={() => {
-                        void handleOpenCart()
-                    }}
-                    style={{
-                        ...halfWidthButtonStyle,
-                        background: "#ffffff",
-                        color: "#000000",
-                        opacity: status === "submitting" ? 0.6 : 1,
-                    }}
-                >
-                    Cart
-                </button>
-            </div>
-
             <button
                 type="button"
                 disabled={status === "submitting"}
                 onClick={() => {
+                    if (cartCount <= 0) {
+                        handleAddToShadowCart()
+                    }
                     void handleCheckout()
                 }}
                 style={{
                     ...buttonStyle,
-                    background: "#ffffff",
-                    color: "#000000",
+                    background: props.addToCartFill,
+                    color: props.addToCartTextColor,
                     opacity: status === "submitting" ? 0.6 : 1,
                 }}
             >
@@ -1358,6 +1251,10 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
             .filter((item) => Boolean(item.src))
     }, [carouselItems])
     const imageCount = carouselMedia.length
+    const primaryProductImageSrc =
+        carouselMedia.find((item) => item.kind === "image")?.src ||
+        carouselMedia[0]?.src ||
+        ""
     const sliderRef = React.useRef<any>(null)
     const refreshSliderLayout = React.useCallback(() => {
         if (!sliderRef.current) return
@@ -2107,6 +2004,10 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                             }
                                             productTitle={title}
                                             optionLabel={selectedColorLabel}
+                                            priceLabel={price}
+                                            productImageSrc={
+                                                primaryProductImageSrc
+                                            }
                                         />
                                     )
                                 ) : useCafe24 ? (
@@ -2180,8 +2081,9 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                                     <span
                                                         style={{
                                                             ...bulletStyle,
-                                                            lineHeight:
-                                                                responsiveBodyTextStyle.lineHeight,
+                                                            lineHeight: `${Math.round(
+                                                                bodyFontSize * 1.6
+                                                            )}px`,
                                                         }}
                                                     >
                                                         •
