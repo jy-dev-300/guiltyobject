@@ -1,4 +1,4 @@
-const { createCart, getPublicStoreBaseUrl } = require("../../lib/cafe24")
+const { createCart, getCafe24CartUrl, getCafe24CheckoutUrl } = require("../../lib/cafe24")
 
 function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Origin", "*")
@@ -52,9 +52,8 @@ module.exports = async (req, res) => {
             message: "Cart created successfully.",
             resolvedVariantCode: result.resolvedVariantCode,
             cart: result.cart,
-            cartRedirectUrl: getPublicStoreBaseUrl()
-                ? `${getPublicStoreBaseUrl().replace(/\/+$/, "")}/order/basket.html`
-                : "",
+            cartRedirectUrl: getCafe24CartUrl(),
+            checkoutRedirectUrl: getCafe24CheckoutUrl(),
         })
     } catch (error) {
         res.status(500).json({

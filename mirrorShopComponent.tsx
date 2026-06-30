@@ -5,6 +5,7 @@ import ReactSlickModule from "react-slick"
 type MirrorShopProps = {
     useCafe24: boolean
     cafe24BackendUrl: string
+    cafe24MemberId: string
     cafe24ProductNo: string
     cafe24VariantCode: string
     cafe24Quantity: number
@@ -117,6 +118,14 @@ type ColorButtonControl = {
     link: string
 }
 
+type ShadowCartItem = {
+    productNo: string
+    variantCode: string
+    quantity: number
+    title: string
+    optionLabel: string
+}
+
 const defaultCarouselItems: CarouselItemControl[] = []
 const SlickSlider =
     (ReactSlickModule as unknown as { default?: React.ComponentType<any> })
@@ -193,6 +202,106 @@ function joinUrl(baseUrl: string, path: string): string {
     return `${normalizedBase}${normalizedPath}`
 }
 
+const shadowCartStorageKey = "mirror-shop-shadow-cart-v1"
+const shadowCartSyncStorageKey = "mirror-shop-shadow-cart-sync-v1"
+
+function readShadowCart(): ShadowCartItem[] {
+    if (typeof window === "undefined") return []
+
+    try {
+        const rawValue = window.localStorage.getItem(shadowCartStorageKey)
+        if (!rawValue) return []
+
+        const parsed = JSON.parse(rawValue)
+        if (!Array.isArray(parsed)) return []
+
+        return parsed
+            .map((item) => ({
+                productNo: String(item?.productNo || "").trim(),
+                variantCode: String(item?.variantCode || "").trim(),
+                quantity: Math.max(1, Math.floor(Number(item?.quantity) || 1)),
+                title: String(item?.title || "").trim(),
+                optionLabel: String(item?.optionLabel || "").trim(),
+            }))
+            .filter((item) => Boolean(item.productNo))
+    } catch (_error) {
+        return []
+    }
+}
+
+function writeShadowCart(items: ShadowCartItem[]) {
+    if (typeof window === "undefined") return
+
+    window.localStorage.setItem(
+        shadowCartStorageKey,
+        JSON.stringify(items)
+    )
+}
+
+function readShadowCartSyncSignature(): string {
+    if (typeof window === "undefined") return ""
+
+    return window.localStorage.getItem(shadowCartSyncStorageKey) || ""
+}
+
+function writeShadowCartSyncSignature(signature: string) {
+    if (typeof window === "undefined") return
+
+    window.localStorage.setItem(shadowCartSyncStorageKey, signature)
+}
+
+function clearShadowCartSyncSignature() {
+    if (typeof window === "undefined") return
+
+    window.localStorage.removeItem(shadowCartSyncStorageKey)
+}
+
+function getShadowCartItemKey(item: {
+    productNo: string
+    variantCode: string
+}) {
+    return `${item.productNo.trim()}::${item.variantCode.trim()}`
+}
+
+function getShadowCartSignature(items: ShadowCartItem[]): string {
+    return items
+        .map((item) => ({
+            productNo: item.productNo.trim(),
+            variantCode: item.variantCode.trim(),
+            quantity: Math.max(1, Math.floor(Number(item.quantity) || 1)),
+        }))
+        .sort((left, right) =>
+            getShadowCartItemKey(left).localeCompare(getShadowCartItemKey(right))
+        )
+        .map(
+            (item) =>
+                `${item.productNo}:${item.variantCode}:${item.quantity}`
+        )
+        .join("|")
+}
+
+function upsertShadowCartItem(
+    items: ShadowCartItem[],
+    nextItem: ShadowCartItem
+): ShadowCartItem[] {
+    const nextKey = getShadowCartItemKey(nextItem)
+    let didUpdate = false
+
+    const updatedItems = items.map((item) => {
+        if (getShadowCartItemKey(item) !== nextKey) return item
+
+        didUpdate = true
+        return {
+            ...item,
+            quantity: item.quantity + nextItem.quantity,
+            title: nextItem.title || item.title,
+            optionLabel: nextItem.optionLabel || item.optionLabel,
+        }
+    })
+
+    return didUpdate ? updatedItems : [...updatedItems, nextItem]
+}
+
 type Cafe24BackendCommerceBridgeProps = {
     enabled: boolean
     backendUrl: string
@@ -212,6 +321,11 @@ type Cafe24BackendCommerceBridgeProps = {
     addToCartBorderWidth: number
     addToCartBorderRadius: number
     addToCartTextColor: string
+}
+
+type Cafe24GuestCommerceBridgeProps = Cafe24BackendCommerceBridgeProps & {
+    productTitle: string
+    optionLabel: string
 }
 
 function Cafe24BackendCommerceBridge(props: Cafe24BackendCommerceBridgeProps) {
@@ -368,6 +482,399 @@ function Cafe24BackendCommerceBridge(props: Cafe24BackendCommerceBridgeProps) {
                 }}
             >
                 {props.buyNowLabel}
+            </button>
+
+            {status === "error" || status === "success" ? (
+                <div
+                    style={{
+                        ...cafe24NoticeStyle,
+                        borderStyle: status === "error" ? "dashed" : "solid",
+                        borderColor:
+                            status === "error"
+                                ? "rgba(0, 0, 0, 0.24)"
+                                : "rgba(0, 0, 0, 0.12)",
+                        fontFamily: props.bodyFontFamily,
+                        fontSize: props.bodyFontSize,
+                        lineHeight: bodyLineHeight,
+                    }}
+                >
+                    {message}
+                </div>
+            ) : null}
+        </div>
+    )
+}
+
+function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
+    const [status, setStatus] = React.useState<
+        "idle" | "submitting" | "success" | "error"
+    >("idle")
+    const [message, setMessage] = React.useState("")
+    const [cartCount, setCartCount] = React.useState(0)
+
+    const isConfigured = Boolean(
+        props.backendUrl.trim() && props.productNo.trim()
+    )
+
+    const bodyLineHeight = `${Math.round(props.bodyFontSize * 1.6)}px`
+    const buttonStyle: React.CSSProperties = {
+        appearance: "none",
+        border: `${props.addToCartBorderWidth}px solid ${props.addToCartBorderColor}`,
+        borderRadius: props.addToCartBorderRadius,
+        width: "100%",
+        minHeight: 52,
+        cursor: status === "submitting" ? "progress" : "pointer",
+        padding: "14px 18px",
+        fontFamily: props.bodyFontFamily,
+        fontSize: props.buttonFontSize,
+        lineHeight: bodyLineHeight,
+        transition: "opacity 0.2s ease",
+    }
+    const halfWidthButtonStyle: React.CSSProperties = {
+        ...buttonStyle,
+        width: "calc(50% - 5px)",
+    }
+
+    const syncCartCount = React.useCallback(() => {
+        const nextItems = readShadowCart()
+        const nextCount = nextItems.reduce(
+            (total, item) => total + item.quantity,
+            0
+        )
+        setCartCount(nextCount)
+    }, [])
+
+    React.useEffect(() => {
+        syncCartCount()
+
+        if (typeof window === "undefined") return
+
+        const handleStorage = (event: StorageEvent) => {
+            if (event.key && event.key !== shadowCartStorageKey) return
+            syncCartCount()
+        }
+
+        window.addEventListener("storage", handleStorage)
+        return () => {
+            window.removeEventListener("storage", handleStorage)
+        }
+    }, [syncCartCount])
+
+    const currentItem = React.useMemo<ShadowCartItem>(
+        () => ({
+            productNo: props.productNo.trim(),
+            variantCode: props.variantCode.trim(),
+            quantity: Math.max(1, Math.floor(props.quantity || 1)),
+            title: props.productTitle.trim(),
+            optionLabel: props.optionLabel.trim(),
+        }),
+        [
+            props.optionLabel,
+            props.productNo,
+            props.productTitle,
+            props.quantity,
+            props.variantCode,
+        ]
+    )
+
+    const handleAddToShadowCart = React.useCallback(() => {
+        if (!isConfigured || typeof window === "undefined") return
+
+        const nextItems = upsertShadowCartItem(readShadowCart(), currentItem)
+        writeShadowCart(nextItems)
+        clearShadowCartSyncSignature()
+        syncCartCount()
+        setStatus("success")
+        setMessage("Saved to your cart in Framer.")
+    }, [currentItem, isConfigured, syncCartCount])
+
+    const handleCheckout = React.useCallback(async () => {
+        if (!isConfigured || typeof window === "undefined") return
+
+        const existingItems = readShadowCart()
+        const itemsToSync =
+            existingItems.length > 0
+                ? existingItems
+                : upsertShadowCartItem([], currentItem)
+        const nextSignature = getShadowCartSignature(itemsToSync)
+        const lastSyncedSignature = readShadowCartSyncSignature()
+
+        if (nextSignature && nextSignature === lastSyncedSignature) {
+            let directRedirectUrl =
+                props.buyNowRedirectUrl.trim() ||
+                props.cartRedirectUrl.trim()
+
+            if (!directRedirectUrl) {
+                try {
+                    const response = await window.fetch(
+                        joinUrl(props.backendUrl, "/api/cart/urls"),
+                        {
+                            method: "GET",
+                        }
+                    )
+                    const result = await response
+                        .json()
+                        .catch(() => ({ ok: false }))
+
+                    if (response.ok) {
+                        directRedirectUrl =
+                            result?.urls?.checkoutUrl ||
+                            result?.urls?.cartUrl ||
+                            ""
+                    }
+                } catch (_error) {
+                    directRedirectUrl = ""
+                }
+            }
+
+            if (directRedirectUrl) {
+                window.location.href = directRedirectUrl
+                return
+            }
+        }
+
+        try {
+            setStatus("submitting")
+            setMessage("")
+
+            const response = await window.fetch(
+                joinUrl(props.backendUrl, "/api/cart/checkout"),
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        items: itemsToSync,
+                    }),
+                }
+            )
+
+            const result = await response
+                .json()
+                .catch(() => ({ ok: false, message: "Invalid JSON" }))
+
+            if (!response.ok) {
+                throw new Error(
+                    result?.message ||
+                        "Cafe24 shadow cart sync failed."
+                )
+            }
+
+            writeShadowCartSyncSignature(nextSignature)
+
+            const nextRedirectUrl =
+                result?.cartRedirectUrl ||
+                props.cartRedirectUrl.trim() ||
+                result?.checkoutRedirectUrl ||
+                props.buyNowRedirectUrl.trim()
+
+            if (nextRedirectUrl) {
+                window.location.href = nextRedirectUrl
+                return
+            }
+
+            setStatus("success")
+            setMessage("Cart synced. Review it in Cafe24 before checkout.")
+        } catch (error) {
+            const nextMessage =
+                error instanceof Error
+                    ? error.message
+                    : "Unable to sync the guest cart to Cafe24."
+            setStatus("error")
+            setMessage(nextMessage)
+        }
+    }, [
+        currentItem,
+        isConfigured,
+        props.backendUrl,
+        props.buyNowRedirectUrl,
+        props.cartRedirectUrl,
+    ])
+
+    const handleOpenCart = React.useCallback(async () => {
+        if (!isConfigured || typeof window === "undefined") return
+
+        const existingItems = readShadowCart()
+        const itemsToSync =
+            existingItems.length > 0
+                ? existingItems
+                : upsertShadowCartItem([], currentItem)
+        const nextSignature = getShadowCartSignature(itemsToSync)
+        const lastSyncedSignature = readShadowCartSyncSignature()
+
+        let directRedirectUrl = props.cartRedirectUrl.trim()
+
+        if (!directRedirectUrl) {
+            try {
+                const response = await window.fetch(
+                    joinUrl(props.backendUrl, "/api/cart/urls"),
+                    {
+                        method: "GET",
+                    }
+                )
+                const result = await response
+                    .json()
+                    .catch(() => ({ ok: false }))
+
+                if (response.ok) {
+                    directRedirectUrl =
+                        result?.urls?.cartUrl ||
+                        result?.urls?.checkoutUrl ||
+                        ""
+                }
+            } catch (_error) {
+                directRedirectUrl = ""
+            }
+        }
+
+        if (nextSignature && nextSignature === lastSyncedSignature) {
+            if (directRedirectUrl) {
+                window.location.href = directRedirectUrl
+                return
+            }
+        }
+
+        try {
+            setStatus("submitting")
+            setMessage("")
+
+            const response = await window.fetch(
+                joinUrl(props.backendUrl, "/api/cart/checkout"),
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        items: itemsToSync,
+                    }),
+                }
+            )
+
+            const result = await response
+                .json()
+                .catch(() => ({ ok: false, message: "Invalid JSON" }))
+
+            if (!response.ok) {
+                throw new Error(
+                    result?.message ||
+                        "Cafe24 cart sync failed."
+                )
+            }
+
+            writeShadowCartSyncSignature(nextSignature)
+
+            const nextRedirectUrl =
+                result?.cartRedirectUrl ||
+                directRedirectUrl ||
+                props.cartRedirectUrl.trim()
+
+            if (nextRedirectUrl) {
+                window.location.href = nextRedirectUrl
+                return
+            }
+
+            setStatus("success")
+            setMessage("Cafe24 cart is ready.")
+        } catch (error) {
+            const nextMessage =
+                error instanceof Error
+                    ? error.message
+                    : "Unable to open the Cafe24 cart."
+            setStatus("error")
+            setMessage(nextMessage)
+        }
+    }, [
+        currentItem,
+        isConfigured,
+        props.backendUrl,
+        props.cartRedirectUrl,
+    ])
+
+    if (!props.enabled) return null
+
+    if (!isConfigured) {
+        return (
+            <div
+                style={{
+                    ...cafe24NoticeStyle,
+                    fontFamily: props.bodyFontFamily,
+                    fontSize: props.bodyFontSize,
+                    lineHeight: bodyLineHeight,
+                }}
+            >
+                Add your Vercel backend URL and Cafe24 product number in
+                Framer to enable the guest shadow cart.
+            </div>
+        )
+    }
+
+    return (
+        <div
+            style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+                width: `${props.addToCartWidth}%`,
+            }}
+        >
+            <div
+                style={{
+                    display: "flex",
+                    gap: 10,
+                    width: "100%",
+                }}
+            >
+                <button
+                    type="button"
+                    disabled={status === "submitting"}
+                    onClick={handleAddToShadowCart}
+                    style={{
+                        ...halfWidthButtonStyle,
+                        background: props.addToCartFill,
+                        color: props.addToCartTextColor,
+                        opacity: status === "submitting" ? 0.6 : 1,
+                    }}
+                >
+                    {status === "submitting"
+                        ? "Saving..."
+                        : props.addToCartLabel}
+                </button>
+
+                <button
+                    type="button"
+                    disabled={status === "submitting"}
+                    onClick={() => {
+                        void handleOpenCart()
+                    }}
+                    style={{
+                        ...halfWidthButtonStyle,
+                        background: "#ffffff",
+                        color: "#000000",
+                        opacity: status === "submitting" ? 0.6 : 1,
+                    }}
+                >
+                    Cart
+                </button>
+            </div>
+
+            <button
+                type="button"
+                disabled={status === "submitting"}
+                onClick={() => {
+                    void handleCheckout()
+                }}
+                style={{
+                    ...buttonStyle,
+                    background: "#ffffff",
+                    color: "#000000",
+                    opacity: status === "submitting" ? 0.6 : 1,
+                }}
+            >
+                {cartCount > 0
+                    ? `Review & checkout (${cartCount})`
+                    : props.buyNowLabel}
             </button>
 
             {status === "error" || status === "success" ? (
@@ -732,6 +1239,7 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
     const carouselSlideDurationMs = 920
     const useCafe24 = props.useCafe24 ?? false
     const cafe24BackendUrl = props.cafe24BackendUrl?.trim() || ""
+    const cafe24MemberId = props.cafe24MemberId?.trim() || ""
     const cafe24ProductNo = props.cafe24ProductNo?.trim() || ""
     const cafe24VariantCode = props.cafe24VariantCode?.trim() || ""
     const cafe24Quantity = props.cafe24Quantity ?? 1
@@ -817,6 +1325,13 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
         "description" | "size" | "shipping" | null
     >(null)
     const [isNarrowLayout, setIsNarrowLayout] = React.useState(false)
+    const selectedColorLabel =
+        colorButtons[
+            Math.min(
+                Math.max(0, selectedColorIndex),
+                Math.max(0, colorButtons.length - 1)
+            )
+        ]?.label?.trim() || ""
     const mediaColumnRef = React.useRef<HTMLDivElement | null>(null)
     const carouselMedia = React.useMemo<CarouselMediaItem[]>(() => {
         return carouselItems
@@ -1525,38 +2040,75 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                 {useCafe24 &&
                                 cafe24BackendUrl &&
                                 cafe24ProductNo ? (
-                                    <Cafe24BackendCommerceBridge
-                                        enabled={useCafe24}
-                                        backendUrl={cafe24BackendUrl}
-                                        productNo={cafe24ProductNo}
-                                        variantCode={cafe24VariantCode}
-                                        quantity={cafe24Quantity}
-                                        cartRedirectUrl={
-                                            cafe24CartRedirectUrl
-                                        }
-                                        buyNowRedirectUrl={
-                                            cafe24BuyNowRedirectUrl
-                                        }
-                                        addToCartLabel={buttonLabel}
-                                        buyNowLabel={cafe24BuyNowLabel}
-                                        bodyFontFamily={bodyFontFamily}
-                                        bodyFontSize={bodyFontSize}
-                                        buttonFontSize={buttonFontSize}
-                                        addToCartWidth={addToCartWidth}
-                                        addToCartFill={addToCartFill}
-                                        addToCartBorderColor={
-                                            addToCartBorderColor
-                                        }
-                                        addToCartBorderWidth={
-                                            addToCartBorderWidth
-                                        }
-                                        addToCartBorderRadius={
-                                            addToCartBorderRadius
-                                        }
-                                        addToCartTextColor={
-                                            addToCartTextColor
-                                        }
-                                    />
+                                    cafe24MemberId ? (
+                                        <Cafe24BackendCommerceBridge
+                                            enabled={useCafe24}
+                                            backendUrl={cafe24BackendUrl}
+                                            productNo={cafe24ProductNo}
+                                            variantCode={cafe24VariantCode}
+                                            quantity={cafe24Quantity}
+                                            cartRedirectUrl={
+                                                cafe24CartRedirectUrl
+                                            }
+                                            buyNowRedirectUrl={
+                                                cafe24BuyNowRedirectUrl
+                                            }
+                                            addToCartLabel={buttonLabel}
+                                            buyNowLabel={cafe24BuyNowLabel}
+                                            bodyFontFamily={bodyFontFamily}
+                                            bodyFontSize={bodyFontSize}
+                                            buttonFontSize={buttonFontSize}
+                                            addToCartWidth={addToCartWidth}
+                                            addToCartFill={addToCartFill}
+                                            addToCartBorderColor={
+                                                addToCartBorderColor
+                                            }
+                                            addToCartBorderWidth={
+                                                addToCartBorderWidth
+                                            }
+                                            addToCartBorderRadius={
+                                                addToCartBorderRadius
+                                            }
+                                            addToCartTextColor={
+                                                addToCartTextColor
+                                            }
+                                        />
+                                    ) : (
+                                        <Cafe24GuestCommerceBridge
+                                            enabled={useCafe24}
+                                            backendUrl={cafe24BackendUrl}
+                                            productNo={cafe24ProductNo}
+                                            variantCode={cafe24VariantCode}
+                                            quantity={cafe24Quantity}
+                                            cartRedirectUrl={
+                                                cafe24CartRedirectUrl
+                                            }
+                                            buyNowRedirectUrl={
+                                                cafe24BuyNowRedirectUrl
+                                            }
+                                            addToCartLabel={buttonLabel}
+                                            buyNowLabel={cafe24BuyNowLabel}
+                                            bodyFontFamily={bodyFontFamily}
+                                            bodyFontSize={bodyFontSize}
+                                            buttonFontSize={buttonFontSize}
+                                            addToCartWidth={addToCartWidth}
+                                            addToCartFill={addToCartFill}
+                                            addToCartBorderColor={
+                                                addToCartBorderColor
+                                            }
+                                            addToCartBorderWidth={
+                                                addToCartBorderWidth
+                                            }
+                                            addToCartBorderRadius={
+                                                addToCartBorderRadius
+                                            }
+                                            addToCartTextColor={
+                                                addToCartTextColor
+                                            }
+                                            productTitle={title}
+                                            optionLabel={selectedColorLabel}
+                                        />
+                                    )
                                 ) : useCafe24 ? (
                                     <Cafe24CommerceBridge
                                         enabled={useCafe24}
@@ -1710,6 +2262,7 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
 MirrorShopComponent.defaultProps = {
     useCafe24: false,
     cafe24BackendUrl: "",
+    cafe24MemberId: "",
     cafe24ProductNo: "",
     cafe24VariantCode: "",
     cafe24Quantity: 1,
@@ -1784,6 +2337,12 @@ addPropertyControls(MirrorShopComponent, {
         type: ControlType.String,
         title: "Backend URL",
         placeholder: "https://your-app.vercel.app",
+        defaultValue: "",
+    },
+    cafe24MemberId: {
+        type: ControlType.String,
+        title: "Member ID",
+        placeholder: "leave blank for guest",
         defaultValue: "",
     },
     cafe24ProductNo: {

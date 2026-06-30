@@ -9,3 +9,4 @@
 .venv-vbr-clean
 .venv-vbr
 /tmp
+env.txt

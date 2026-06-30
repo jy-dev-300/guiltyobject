@@ -1,0 +1,4 @@
+todo
+
+design cafe24 checkout page.
+put logo in cafe24 checkout page link to Framer
