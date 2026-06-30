@@ -194,6 +194,7 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
     const [cartCount, setCartCount] = React.useState(0)
     const [message, setMessage] = React.useState("")
     const [debugPayload, setDebugPayload] = React.useState("")
+    const [cartDebugSummary, setCartDebugSummary] = React.useState("")
     const [pendingRedirectUrl, setPendingRedirectUrl] = React.useState("")
 
     const hasBackend = Boolean(props.backendUrl.trim())
@@ -328,6 +329,7 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
         setStatus("submitting")
         setMessage("")
         setDebugPayload("")
+        setCartDebugSummary("")
         setPendingRedirectUrl("")
 
         if (!directRedirectUrl) {
@@ -380,6 +382,54 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
 
             setDebugPayload(JSON.stringify(result, null, 2))
 
+            const nextCartDebugSummary = {
+                checkoutRedirectUrl:
+                    String(result?.checkoutRedirectUrl || "").trim() ||
+                    directRedirectUrl,
+                cartRedirectUrl: String(result?.cartRedirectUrl || "").trim(),
+                items: Array.isArray(result?.results)
+                    ? result.results
+                          .map((entry) => {
+                              const nextItemCartDebug =
+                                  entry?.cartDebug &&
+                                  typeof entry.cartDebug === "object"
+                                      ? entry.cartDebug
+                                      : null
+                              return {
+                                  productNo: String(
+                                      entry?.productNo || ""
+                                  ).trim(),
+                                  resolvedVariantCode: String(
+                                      entry?.resolvedVariantCode || ""
+                                  ).trim(),
+                                  cartDebug: nextItemCartDebug,
+                                  note:
+                                      nextItemCartDebug &&
+                                      Object.keys(nextItemCartDebug).length > 0
+                                          ? ""
+                                          : "No item-level cart/session fields were returned by Cafe24 for this item.",
+                              }
+                          })
+                          .filter(
+                              (entry) =>
+                                  Boolean(entry.productNo) ||
+                                  Boolean(entry.resolvedVariantCode) ||
+                                  Boolean(entry.cartDebug) ||
+                                  Boolean(entry.note)
+                          )
+                    : [],
+            }
+
+            if (
+                nextCartDebugSummary.checkoutRedirectUrl ||
+                nextCartDebugSummary.cartRedirectUrl ||
+                nextCartDebugSummary.items.length > 0
+            ) {
+                setCartDebugSummary(
+                    JSON.stringify(nextCartDebugSummary, null, 2)
+                )
+            }
+
             if (!response.ok) {
                 throw new Error(result?.message || "Cafe24 cart sync failed.")
             }
@@ -424,6 +474,7 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
                     2
                 )
             )
+            setCartDebugSummary((current) => current || "")
 
             if (directRedirectUrl) {
                 setPendingRedirectUrl(directRedirectUrl)
@@ -448,6 +499,7 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
                     syncCartCount()
                     setMessage("")
                     setDebugPayload("")
+                    setCartDebugSummary("")
                     setPendingRedirectUrl("")
                     setIsOpen(true)
                 }}
@@ -678,6 +730,17 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
 
                             {message ? (
                                 <div style={cartMessageStyle}>{message}</div>
+                            ) : null}
+
+                            {cartDebugSummary ? (
+                                <div style={cartDebugPanelStyle}>
+                                    <div style={cartDebugLabelStyle}>
+                                        Cart URI and session fields
+                                    </div>
+                                    <pre style={cartDebugPreStyle}>
+                                        {cartDebugSummary}
+                                    </pre>
+                                </div>
                             ) : null}
 
                             {debugPayload ? (
