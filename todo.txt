@@ -2,3 +2,7 @@ todo
 
 design cafe24 checkout page.
 put logo in cafe24 checkout page link to Framer
+hide all other logos 
+sign up / login used native Cafe24
+account page cafe24 no controls other than: just X out of there back to prev page
+or logout button, leads to prev page with login status = false

@@ -618,110 +618,6 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
         setMessage("Saved to your cart in Framer.")
     }, [currentItem, isConfigured, syncCartCount])
 
-    const handleCheckout = React.useCallback(async () => {
-        if (!isConfigured || typeof window === "undefined") return
-
-        const existingItems = readShadowCart()
-        const itemsToSync =
-            existingItems.length > 0
-                ? existingItems
-                : upsertShadowCartItem([], currentItem)
-        const nextSignature = getShadowCartSignature(itemsToSync)
-        const lastSyncedSignature = readShadowCartSyncSignature()
-
-        if (nextSignature && nextSignature === lastSyncedSignature) {
-            let directRedirectUrl =
-                props.buyNowRedirectUrl.trim() ||
-                props.cartRedirectUrl.trim()
-
-            if (!directRedirectUrl) {
-                try {
-                    const response = await window.fetch(
-                        joinUrl(props.backendUrl, "/api/cart/urls"),
-                        {
-                            method: "GET",
-                        }
-                    )
-                    const result = await response
-                        .json()
-                        .catch(() => ({ ok: false }))
-
-                    if (response.ok) {
-                        directRedirectUrl =
-                            result?.urls?.checkoutUrl ||
-                            result?.urls?.cartUrl ||
-                            ""
-                    }
-                } catch (_error) {
-                    directRedirectUrl = ""
-                }
-            }
-
-            if (directRedirectUrl) {
-                window.location.href = directRedirectUrl
-                return
-            }
-        }
-
-        try {
-            setStatus("submitting")
-            setMessage("")
-
-            const response = await window.fetch(
-                joinUrl(props.backendUrl, "/api/cart/checkout"),
-                {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        items: itemsToSync,
-                    }),
-                }
-            )
-
-            const result = await response
-                .json()
-                .catch(() => ({ ok: false, message: "Invalid JSON" }))
-
-            if (!response.ok) {
-                throw new Error(
-                    result?.message ||
-                        "Cafe24 shadow cart sync failed."
-                )
-            }
-
-            writeShadowCartSyncSignature(nextSignature)
-
-            const nextRedirectUrl =
-                result?.checkoutRedirectUrl ||
-                props.buyNowRedirectUrl.trim() ||
-                result?.cartRedirectUrl ||
-                props.cartRedirectUrl.trim()
-
-            if (nextRedirectUrl) {
-                window.location.href = nextRedirectUrl
-                return
-            }
-
-            setStatus("success")
-            setMessage("Cart synced. Review it in Cafe24 before checkout.")
-        } catch (error) {
-            const nextMessage =
-                error instanceof Error
-                    ? error.message
-                    : "Unable to sync the guest cart to Cafe24."
-            setStatus("error")
-            setMessage(nextMessage)
-        }
-    }, [
-        currentItem,
-        isConfigured,
-        props.backendUrl,
-        props.buyNowRedirectUrl,
-        props.cartRedirectUrl,
-    ])
-
     if (!props.enabled) return null
 
     if (!isConfigured) {
@@ -753,10 +649,7 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
                 type="button"
                 disabled={status === "submitting"}
                 onClick={() => {
-                    if (cartCount <= 0) {
-                        handleAddToShadowCart()
-                    }
-                    void handleCheckout()
+                    handleAddToShadowCart()
                 }}
                 style={{
                     ...buttonStyle,
@@ -765,9 +658,7 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
                     opacity: status === "submitting" ? 0.6 : 1,
                 }}
             >
-                {cartCount > 0
-                    ? `Review & checkout (${cartCount})`
-                    : props.buyNowLabel}
+                {props.addToCartLabel}
             </button>
 
             {status === "error" || status === "success" ? (

@@ -193,6 +193,8 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
     const [items, setItems] = React.useState<ShadowCartItem[]>([])
     const [cartCount, setCartCount] = React.useState(0)
     const [message, setMessage] = React.useState("")
+    const [debugPayload, setDebugPayload] = React.useState("")
+    const [pendingRedirectUrl, setPendingRedirectUrl] = React.useState("")
 
     const hasBackend = Boolean(props.backendUrl.trim())
 
@@ -325,6 +327,8 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
 
         setStatus("submitting")
         setMessage("")
+        setDebugPayload("")
+        setPendingRedirectUrl("")
 
         if (!directRedirectUrl) {
             try {
@@ -349,7 +353,9 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
 
         if (nextSignature && nextSignature === lastSyncedSignature) {
             if (directRedirectUrl) {
-                window.location.href = directRedirectUrl
+                setStatus("success")
+                setMessage("Cart already synced. Continue when you're ready.")
+                setPendingRedirectUrl(directRedirectUrl)
                 return
             }
         }
@@ -372,6 +378,8 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
                 .json()
                 .catch(() => ({ ok: false, message: "Invalid JSON" }))
 
+            setDebugPayload(JSON.stringify(result, null, 2))
+
             if (!response.ok) {
                 throw new Error(result?.message || "Cafe24 cart sync failed.")
             }
@@ -386,8 +394,9 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
                 props.cartRedirectUrl.trim()
 
             if (nextRedirectUrl) {
-                setIsOpen(false)
-                window.location.href = nextRedirectUrl
+                setStatus("success")
+                setMessage("Cafe24 cart is ready. Review the response below, then continue.")
+                setPendingRedirectUrl(nextRedirectUrl)
                 return
             }
 
@@ -401,10 +410,23 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
                     ? error.message
                     : "Unable to open the Cafe24 cart."
             )
+            setDebugPayload((current) =>
+                current ||
+                JSON.stringify(
+                    {
+                        ok: false,
+                        message:
+                            error instanceof Error
+                                ? error.message
+                                : "Unable to open the Cafe24 cart.",
+                    },
+                    null,
+                    2
+                )
+            )
 
             if (directRedirectUrl) {
-                setIsOpen(false)
-                window.location.href = directRedirectUrl
+                setPendingRedirectUrl(directRedirectUrl)
             }
         }
     }, [
@@ -425,6 +447,8 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
                 onClick={() => {
                     syncCartCount()
                     setMessage("")
+                    setDebugPayload("")
+                    setPendingRedirectUrl("")
                     setIsOpen(true)
                 }}
                 style={{
@@ -477,6 +501,12 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
                         </div>
 
                         <div style={cartDrawerBodyStyle}>
+                            {debugPayload ? (
+                                <div style={cartDebugNoticeStyle}>
+                                    Checkout response captured below. The drawer will stay open until you press continue.
+                                </div>
+                            ) : null}
+
                             <div
                                 style={{
                                     ...cartSectionLabelStyle,
@@ -648,6 +678,31 @@ function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
 
                             {message ? (
                                 <div style={cartMessageStyle}>{message}</div>
+                            ) : null}
+
+                            {debugPayload ? (
+                                <div style={cartDebugPanelStyle}>
+                                    <div style={cartDebugLabelStyle}>
+                                        Checkout response
+                                    </div>
+                                    <pre style={cartDebugPreStyle}>
+                                        {debugPayload}
+                                    </pre>
+                                </div>
+                            ) : null}
+
+                            {pendingRedirectUrl ? (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (typeof window === "undefined") return
+                                        setIsOpen(false)
+                                        window.location.href = pendingRedirectUrl
+                                    }}
+                                    style={cartContinueButtonStyle}
+                                >
+                                    Continue to Cafe24
+                                </button>
                             ) : null}
 
                             <button
@@ -1191,6 +1246,53 @@ const cartCheckoutButtonStyle: React.CSSProperties = {
     cursor: "pointer",
     fontSize: 20,
     lineHeight: "24px",
+    textTransform: "uppercase",
+}
+
+const cartDebugPanelStyle: React.CSSProperties = {
+    border: "1px solid rgba(0, 0, 0, 0.12)",
+    background: "#f7f7f4",
+    padding: "12px",
+}
+
+const cartDebugNoticeStyle: React.CSSProperties = {
+    marginBottom: 16,
+    padding: "12px 14px",
+    background: "#fff6df",
+    border: "1px solid rgba(0, 0, 0, 0.12)",
+    fontSize: 13,
+    lineHeight: "18px",
+    color: "#463200",
+}
+
+const cartDebugLabelStyle: React.CSSProperties = {
+    fontSize: 12,
+    lineHeight: "16px",
+    textTransform: "uppercase",
+    color: "#555555",
+    marginBottom: 8,
+}
+
+const cartDebugPreStyle: React.CSSProperties = {
+    margin: 0,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    fontSize: 11,
+    lineHeight: "16px",
+    color: "#111111",
+    fontFamily: "monospace",
+}
+
+const cartContinueButtonStyle: React.CSSProperties = {
+    appearance: "none",
+    border: "1px solid #111111",
+    background: "#ffffff",
+    color: "#111111",
+    width: "100%",
+    minHeight: 48,
+    cursor: "pointer",
+    fontSize: 16,
+    lineHeight: "20px",
     textTransform: "uppercase",
 }
 
