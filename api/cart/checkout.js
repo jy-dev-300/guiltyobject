@@ -63,9 +63,12 @@ module.exports = async (req, res) => {
 
         for (const item of normalizedItems) {
             const result = await createCart(item)
+            const cartPayload = result?.cart || null
+
             results.push({
                 productNo: item.productNo,
                 resolvedVariantCode: result.resolvedVariantCode,
+                cart: cartPayload,
             })
         }
 
