@@ -4,6 +4,65 @@ const {
     getCafe24CheckoutUrl,
 } = require("../../lib/cafe24")
 
+function collectInterestingCartFields(value, path = "", depth = 0, acc = {}) {
+    if (!value || typeof value !== "object" || depth > 3) {
+        return acc
+    }
+
+    for (const [key, nestedValue] of Object.entries(value)) {
+        const nextPath = path ? `${path}.${key}` : key
+        const normalizedKey = key.toLowerCase()
+        const isInterestingKey =
+            normalizedKey.includes("url") ||
+            normalizedKey.includes("uri") ||
+            normalizedKey.includes("id") ||
+            normalizedKey.includes("basket") ||
+            normalizedKey.includes("cart") ||
+            normalizedKey.includes("token") ||
+            normalizedKey.includes("session")
+
+        if (
+            isInterestingKey &&
+            (typeof nestedValue === "string" ||
+                typeof nestedValue === "number" ||
+                typeof nestedValue === "boolean" ||
+                nestedValue == null)
+        ) {
+            acc[nextPath] = nestedValue
+        }
+
+        if (Array.isArray(nestedValue)) {
+            if (isInterestingKey) {
+                acc[`${nextPath}.length`] = nestedValue.length
+            }
+
+            for (let index = 0; index < nestedValue.length; index += 1) {
+                const entry = nestedValue[index]
+                if (entry && typeof entry === "object") {
+                    collectInterestingCartFields(
+                        entry,
+                        `${nextPath}[${index}]`,
+                        depth + 1,
+                        acc
+                    )
+                }
+            }
+            continue
+        }
+
+        if (nestedValue && typeof nestedValue === "object") {
+            collectInterestingCartFields(
+                nestedValue,
+                nextPath,
+                depth + 1,
+                acc
+            )
+        }
+    }
+
+    return acc
+}
+
 function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Origin", "*")
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -64,10 +123,12 @@ module.exports = async (req, res) => {
         for (const item of normalizedItems) {
             const result = await createCart(item)
             const cartPayload = result?.cart || null
+            const cartDebug = collectInterestingCartFields(cartPayload)
 
             results.push({
                 productNo: item.productNo,
                 resolvedVariantCode: result.resolvedVariantCode,
+                cartDebug,
                 cart: cartPayload,
             })
         }
