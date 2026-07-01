@@ -4,17 +4,14 @@ import ReactSlickModule from "react-slick"
 
 type MirrorShopProps = {
     useCafe24: boolean
+    showCafe24VariantHelper: boolean
     cafe24BackendUrl: string
-    cafe24MemberId: string
-    cafe24ProductNo: string
-    cafe24VariantCode: string
-    cafe24Quantity: number
-    cafe24CartRedirectUrl: string
-    cafe24BuyNowRedirectUrl: string
     cafe24StoreDomain: string
     cafe24ShopNo: string
     cafe24AccessToken: string
     cafe24ProductHandle: string
+    cafe24ProductNo: string
+    cafe24VariantId: string
     cafe24BuyNowLabel: string
     title: string
     description: string
@@ -119,16 +116,6 @@ type ColorButtonControl = {
     link: string
 }
 
-type ShadowCartItem = {
-    productNo: string
-    variantCode: string
-    quantity: number
-    title: string
-    optionLabel: string
-    priceLabel: string
-    previewImage: string
-}
-
 const defaultCarouselItems: CarouselItemControl[] = []
 const SlickSlider =
     (ReactSlickModule as unknown as { default?: React.ComponentType<any> })
@@ -214,474 +201,33 @@ function joinUrl(baseUrl: string, path: string): string {
     return `${normalizedBase}${normalizedPath}`
 }
 
-const shadowCartStorageKey = "mirror-shop-shadow-cart-v1"
-const shadowCartSyncStorageKey = "mirror-shop-shadow-cart-sync-v1"
-const shadowCartChangeEventName = "mirror-shop-shadow-cart-change"
-
-function readShadowCart(): ShadowCartItem[] {
-    if (typeof window === "undefined") return []
+function normalizeStoreDomain(value: string): string {
+    const trimmedValue = value.trim()
+    if (!trimmedValue) return ""
 
     try {
-        const rawValue = window.localStorage.getItem(shadowCartStorageKey)
-        if (!rawValue) return []
-
-        const parsed = JSON.parse(rawValue)
-        if (!Array.isArray(parsed)) return []
-
-        return parsed
-            .map((item) => ({
-                productNo: String(item?.productNo || "").trim(),
-                variantCode: String(item?.variantCode || "").trim(),
-                quantity: Math.max(1, Math.floor(Number(item?.quantity) || 1)),
-                title: String(item?.title || "").trim(),
-                optionLabel: String(item?.optionLabel || "").trim(),
-                priceLabel: String(item?.priceLabel || "").trim(),
-                previewImage: String(item?.previewImage || "").trim(),
-            }))
-            .filter((item) => Boolean(item.productNo))
+        const candidate = /^https?:\/\//i.test(trimmedValue)
+            ? trimmedValue
+            : `https://${trimmedValue}`
+        return new URL(candidate).host.trim()
     } catch (_error) {
-        return []
+        return trimmedValue
+            .replace(/^https?:\/\//i, "")
+            .replace(/\/.*$/, "")
+            .trim()
     }
-}
-
-function writeShadowCart(items: ShadowCartItem[]) {
-    if (typeof window === "undefined") return
-
-    window.localStorage.setItem(shadowCartStorageKey, JSON.stringify(items))
-    window.dispatchEvent(new Event(shadowCartChangeEventName))
-}
-
-function readShadowCartSyncSignature(): string {
-    if (typeof window === "undefined") return ""
-
-    return window.localStorage.getItem(shadowCartSyncStorageKey) || ""
-}
-
-function writeShadowCartSyncSignature(signature: string) {
-    if (typeof window === "undefined") return
-
-    window.localStorage.setItem(shadowCartSyncStorageKey, signature)
-}
-
-function clearShadowCartSyncSignature() {
-    if (typeof window === "undefined") return
-
-    window.localStorage.removeItem(shadowCartSyncStorageKey)
-}
-
-function getShadowCartItemKey(item: {
-    productNo: string
-    variantCode: string
-}) {
-    return `${item.productNo.trim()}::${item.variantCode.trim()}`
-}
-
-function getShadowCartSignature(items: ShadowCartItem[]): string {
-    return items
-        .map((item) => ({
-            productNo: item.productNo.trim(),
-            variantCode: item.variantCode.trim(),
-            quantity: Math.max(1, Math.floor(Number(item.quantity) || 1)),
-        }))
-        .sort((left, right) =>
-            getShadowCartItemKey(left).localeCompare(
-                getShadowCartItemKey(right)
-            )
-        )
-        .map((item) => `${item.productNo}:${item.variantCode}:${item.quantity}`)
-        .join("|")
-}
-
-function upsertShadowCartItem(
-    items: ShadowCartItem[],
-    nextItem: ShadowCartItem
-): ShadowCartItem[] {
-    const nextKey = getShadowCartItemKey(nextItem)
-    let didUpdate = false
-
-    const updatedItems = items.map((item) => {
-        if (getShadowCartItemKey(item) !== nextKey) return item
-
-        didUpdate = true
-        return {
-            ...item,
-            quantity: item.quantity + nextItem.quantity,
-            title: nextItem.title || item.title,
-            optionLabel: nextItem.optionLabel || item.optionLabel,
-            priceLabel: nextItem.priceLabel || item.priceLabel,
-            previewImage: nextItem.previewImage || item.previewImage,
-        }
-    })
-
-    return didUpdate ? updatedItems : [...updatedItems, nextItem]
-}
-
-type Cafe24BackendCommerceBridgeProps = {
-    enabled: boolean
-    backendUrl: string
-    productNo: string
-    variantCode: string
-    quantity: number
-    cartRedirectUrl: string
-    buyNowRedirectUrl: string
-    addToCartLabel: string
-    buyNowLabel: string
-    bodyFontFamily: string
-    bodyFontSize: number
-    buttonFontSize: number
-    addToCartWidth: number
-    addToCartFill: string
-    addToCartBorderColor: string
-    addToCartBorderWidth: number
-    addToCartBorderRadius: number
-    addToCartTextColor: string
-}
-
-type Cafe24GuestCommerceBridgeProps = Cafe24BackendCommerceBridgeProps & {
-    productTitle: string
-    optionLabel: string
-    priceLabel: string
-    productImageSrc: string
-}
-
-function Cafe24BackendCommerceBridge(props: Cafe24BackendCommerceBridgeProps) {
-    const [status, setStatus] = React.useState<
-        "idle" | "submitting" | "success" | "error"
-    >("idle")
-    const [message, setMessage] = React.useState("")
-
-    const isConfigured = Boolean(
-        props.backendUrl.trim() && props.productNo.trim()
-    )
-
-    const bodyLineHeight = `${Math.round(props.bodyFontSize * 1.6)}px`
-    const buttonStyle: React.CSSProperties = {
-        appearance: "none",
-        border: `${props.addToCartBorderWidth}px solid ${props.addToCartBorderColor}`,
-        borderRadius: props.addToCartBorderRadius,
-        width: "100%",
-        minHeight: 52,
-        cursor: status === "submitting" ? "progress" : "pointer",
-        padding: "14px 18px",
-        fontFamily: props.bodyFontFamily,
-        fontSize: props.buttonFontSize,
-        lineHeight: bodyLineHeight,
-        transition: "opacity 0.2s ease",
-    }
-
-    const handleCommerceAction = React.useCallback(
-        async (intent: "cart" | "buy") => {
-            if (!isConfigured || typeof window === "undefined") return
-
-            const nextRedirectUrl =
-                intent === "buy"
-                    ? props.buyNowRedirectUrl.trim() ||
-                      props.cartRedirectUrl.trim()
-                    : props.cartRedirectUrl.trim()
-
-            try {
-                setStatus("submitting")
-                setMessage("")
-
-                const response = await window.fetch(
-                    joinUrl(props.backendUrl, "/api/cart/add"),
-                    {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({
-                            productNo: props.productNo.trim(),
-                            variantCode: props.variantCode.trim() || undefined,
-                            quantity: Math.max(
-                                1,
-                                Math.floor(props.quantity || 1)
-                            ),
-                        }),
-                    }
-                )
-
-                const result = await response
-                    .json()
-                    .catch(() => ({ ok: false, message: "Invalid JSON" }))
-
-                if (!response.ok) {
-                    throw new Error(
-                        result?.message || "Cafe24 backend request failed."
-                    )
-                }
-
-                if (nextRedirectUrl) {
-                    window.location.href = nextRedirectUrl
-                    return
-                }
-
-                setStatus("success")
-                setMessage("Added to cart.")
-            } catch (error) {
-                const nextMessage =
-                    error instanceof Error
-                        ? error.message
-                        : "Unable to reach the Cafe24 backend."
-                setStatus("error")
-                setMessage(nextMessage)
-            }
-        },
-        [
-            isConfigured,
-            props.backendUrl,
-            props.buyNowRedirectUrl,
-            props.cartRedirectUrl,
-            props.productNo,
-            props.quantity,
-            props.variantCode,
-        ]
-    )
-
-    if (!props.enabled) return null
-
-    if (!isConfigured) {
-        return (
-            <div
-                style={{
-                    ...cafe24NoticeStyle,
-                    fontFamily: props.bodyFontFamily,
-                    fontSize: props.bodyFontSize,
-                    lineHeight: bodyLineHeight,
-                }}
-            >
-                Add your Vercel backend URL and Cafe24 product number in Framer
-                to enable the backend-powered cart button.
-            </div>
-        )
-    }
-
-    return (
-        <div
-            style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 10,
-                width: `${props.addToCartWidth}%`,
-            }}
-        >
-            <button
-                type="button"
-                disabled={status === "submitting"}
-                onClick={() => {
-                    void handleCommerceAction("cart")
-                }}
-                style={{
-                    ...buttonStyle,
-                    background: props.addToCartFill,
-                    color: props.addToCartTextColor,
-                    opacity: status === "submitting" ? 0.6 : 1,
-                }}
-            >
-                {status === "submitting" ? "Adding..." : props.addToCartLabel}
-            </button>
-
-            <button
-                type="button"
-                disabled={status === "submitting"}
-                onClick={() => {
-                    void handleCommerceAction("buy")
-                }}
-                style={{
-                    ...buttonStyle,
-                    background: "#ffffff",
-                    color: "#000000",
-                    opacity: status === "submitting" ? 0.6 : 1,
-                }}
-            >
-                {props.buyNowLabel}
-            </button>
-
-            {status === "error" || status === "success" ? (
-                <div
-                    style={{
-                        ...cafe24NoticeStyle,
-                        borderStyle: status === "error" ? "dashed" : "solid",
-                        borderColor:
-                            status === "error"
-                                ? "rgba(0, 0, 0, 0.24)"
-                                : "rgba(0, 0, 0, 0.12)",
-                        fontFamily: props.bodyFontFamily,
-                        fontSize: props.bodyFontSize,
-                        lineHeight: bodyLineHeight,
-                    }}
-                >
-                    {message}
-                </div>
-            ) : null}
-        </div>
-    )
-}
-
-function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
-    const [status, setStatus] = React.useState<
-        "idle" | "submitting" | "success" | "error"
-    >("idle")
-    const [message, setMessage] = React.useState("")
-    const [cartCount, setCartCount] = React.useState(0)
-
-    const isConfigured = Boolean(
-        props.backendUrl.trim() && props.productNo.trim()
-    )
-
-    const bodyLineHeight = `${Math.round(props.bodyFontSize * 1.6)}px`
-    const buttonStyle: React.CSSProperties = {
-        appearance: "none",
-        border: `${props.addToCartBorderWidth}px solid ${props.addToCartBorderColor}`,
-        borderRadius: props.addToCartBorderRadius,
-        width: "100%",
-        minHeight: 52,
-        cursor: status === "submitting" ? "progress" : "pointer",
-        padding: "14px 18px",
-        fontFamily: props.bodyFontFamily,
-        fontSize: props.buttonFontSize,
-        lineHeight: bodyLineHeight,
-        transition: "opacity 0.2s ease",
-    }
-    const syncCartCount = React.useCallback(() => {
-        const nextItems = readShadowCart()
-        const nextCount = nextItems.reduce(
-            (total, item) => total + item.quantity,
-            0
-        )
-        setCartCount(nextCount)
-    }, [])
-
-    React.useEffect(() => {
-        syncCartCount()
-
-        if (typeof window === "undefined") return
-
-        const handleStorage = (event: StorageEvent) => {
-            if (event.key && event.key !== shadowCartStorageKey) return
-            syncCartCount()
-        }
-        const handleShadowCartChange = () => {
-            syncCartCount()
-        }
-
-        window.addEventListener("storage", handleStorage)
-        window.addEventListener(
-            shadowCartChangeEventName,
-            handleShadowCartChange
-        )
-        return () => {
-            window.removeEventListener("storage", handleStorage)
-            window.removeEventListener(
-                shadowCartChangeEventName,
-                handleShadowCartChange
-            )
-        }
-    }, [syncCartCount])
-
-    const currentItem = React.useMemo<ShadowCartItem>(
-        () => ({
-            productNo: props.productNo.trim(),
-            variantCode: props.variantCode.trim(),
-            quantity: Math.max(1, Math.floor(props.quantity || 1)),
-            title: props.productTitle.trim(),
-            optionLabel: props.optionLabel.trim(),
-            priceLabel: props.priceLabel.trim(),
-            previewImage: props.productImageSrc.trim(),
-        }),
-        [
-            props.optionLabel,
-            props.priceLabel,
-            props.productNo,
-            props.productImageSrc,
-            props.productTitle,
-            props.quantity,
-            props.variantCode,
-        ]
-    )
-
-    const handleAddToShadowCart = React.useCallback(() => {
-        if (!isConfigured || typeof window === "undefined") return
-
-        const nextItems = upsertShadowCartItem(readShadowCart(), currentItem)
-        writeShadowCart(nextItems)
-        clearShadowCartSyncSignature()
-        syncCartCount()
-        setStatus("success")
-        setMessage("Saved to your cart in Framer.")
-    }, [currentItem, isConfigured, syncCartCount])
-
-    if (!props.enabled) return null
-
-    if (!isConfigured) {
-        return (
-            <div
-                style={{
-                    ...cafe24NoticeStyle,
-                    fontFamily: props.bodyFontFamily,
-                    fontSize: props.bodyFontSize,
-                    lineHeight: bodyLineHeight,
-                }}
-            >
-                Add your Vercel backend URL and Cafe24 product number in Framer
-                to enable the guest shadow cart.
-            </div>
-        )
-    }
-
-    return (
-        <div
-            style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: 10,
-                width: `${props.addToCartWidth}%`,
-            }}
-        >
-            <button
-                type="button"
-                disabled={status === "submitting"}
-                onClick={() => {
-                    handleAddToShadowCart()
-                }}
-                style={{
-                    ...buttonStyle,
-                    background: props.addToCartFill,
-                    color: props.addToCartTextColor,
-                    opacity: status === "submitting" ? 0.6 : 1,
-                }}
-            >
-                {props.addToCartLabel}
-            </button>
-
-            {status === "error" || status === "success" ? (
-                <div
-                    style={{
-                        ...cafe24NoticeStyle,
-                        borderStyle: status === "error" ? "dashed" : "solid",
-                        borderColor:
-                            status === "error"
-                                ? "rgba(0, 0, 0, 0.24)"
-                                : "rgba(0, 0, 0, 0.12)",
-                        fontFamily: props.bodyFontFamily,
-                        fontSize: props.bodyFontSize,
-                        lineHeight: bodyLineHeight,
-                    }}
-                >
-                    {message}
-                </div>
-            ) : null}
-        </div>
-    )
 }
 
 type Cafe24CommerceBridgeProps = {
     enabled: boolean
+    showVariantHelper: boolean
     backendUrl: string
     storeDomain: string
     shopNo: string
     accessToken: string
     productHandle: string
+    productNo: string
+    variantId: string
     addToCartLabel: string
     buyNowLabel: string
     bodyFontFamily: string
@@ -700,6 +246,12 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
     const idsRef = React.useRef<{ storeId: string; cartId: string } | null>(
         null
     )
+    const [resolvedProductNo, setResolvedProductNo] = React.useState("")
+    const [resolvedSelectedVariantId, setResolvedSelectedVariantId] =
+        React.useState("")
+    const [contextDebugJson, setContextDebugJson] = React.useState("")
+    const [variantRecords, setVariantRecords] = React.useState<any[]>([])
+    const [variantLookupMessage, setVariantLookupMessage] = React.useState("")
     const [remoteConfig, setRemoteConfig] = React.useState<{
         storeDomain: string
         shopNo: string
@@ -719,6 +271,11 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
         shopNo: string
         publicStoreUrl: string
         hasOauthRefreshConfig: boolean
+        tokenStorePath: string
+        tokenStoreSource: string
+        tokenStoreIsDurable: boolean
+        hasPersistedRefreshToken: boolean
+        persistedRefreshTokenExpiresAt: string | null
         hasAccessToken: boolean
         accessTokenPreview: string
         accessTokenLength: number
@@ -787,7 +344,7 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
     }, [props.enabled])
 
     React.useEffect(() => {
-        const manualStoreDomain = props.storeDomain.trim()
+        const manualStoreDomain = normalizeStoreDomain(props.storeDomain)
         const manualShopNo = props.shopNo.trim()
         const manualAccessToken = props.accessToken.trim()
         const backendUrl = props.backendUrl.trim()
@@ -806,7 +363,7 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
             return
         }
 
-        if (manualStoreDomain && manualShopNo && manualAccessToken) {
+        if (!backendUrl && manualStoreDomain && manualShopNo && manualAccessToken) {
             setConfigStatus("ready")
             setConfigMessage("")
             return
@@ -854,6 +411,7 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                     source: String(result?.config?.source || "").trim(),
                 })
                 setConfigStatus("ready")
+                setConfigMessage("")
             })
             .catch((error) => {
                 if (isCancelled) return
@@ -906,6 +464,20 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                     hasOauthRefreshConfig: Boolean(
                         result?.debug?.hasOauthRefreshConfig
                     ),
+                    tokenStorePath: String(
+                        result?.debug?.tokenStorePath || ""
+                    ).trim(),
+                    tokenStoreSource: String(
+                        result?.debug?.tokenStoreSource || ""
+                    ).trim(),
+                    tokenStoreIsDurable: Boolean(
+                        result?.debug?.tokenStoreIsDurable
+                    ),
+                    hasPersistedRefreshToken: Boolean(
+                        result?.debug?.hasPersistedRefreshToken
+                    ),
+                    persistedRefreshTokenExpiresAt:
+                        result?.debug?.persistedRefreshTokenExpiresAt || null,
                     hasAccessToken: Boolean(result?.debug?.hasAccessToken),
                     accessTokenPreview: String(
                         result?.debug?.accessTokenPreview || ""
@@ -919,6 +491,12 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                 if (isCancelled) return
 
                 setDebugInfo(null)
+                setConfigStatus("error")
+                setConfigMessage(
+                    error instanceof Error
+                        ? error.message
+                        : "Unable to load Cafe24 storefront debug info."
+                )
                 setDebugMessage(
                     error instanceof Error
                         ? error.message
@@ -943,25 +521,45 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
         if (!container || !ids) return
 
         if (!props.enabled) {
+            setResolvedProductNo("")
+            setResolvedSelectedVariantId("")
+            setContextDebugJson("")
             container.innerHTML = ""
             setRenderStatus("idle")
             return
         }
 
         if (scriptStatus !== "ready") {
+            setResolvedProductNo("")
+            setResolvedSelectedVariantId("")
+            setContextDebugJson("")
             container.innerHTML = ""
             setRenderStatus("idle")
             return
         }
 
-        const storeDomain =
-            props.storeDomain.trim() || remoteConfig.storeDomain.trim()
-        const shopNo = props.shopNo.trim() || remoteConfig.shopNo.trim()
-        const accessToken =
-            props.accessToken.trim() || remoteConfig.accessToken.trim()
+        const shouldPreferBackendConfig = Boolean(props.backendUrl.trim())
+        const storeDomain = shouldPreferBackendConfig
+            ? normalizeStoreDomain(remoteConfig.storeDomain) ||
+              normalizeStoreDomain(props.storeDomain)
+            : normalizeStoreDomain(props.storeDomain) ||
+              normalizeStoreDomain(remoteConfig.storeDomain)
+        const shopNo = shouldPreferBackendConfig
+            ? remoteConfig.shopNo.trim() || props.shopNo.trim()
+            : props.shopNo.trim() || remoteConfig.shopNo.trim()
+        const accessToken = shouldPreferBackendConfig
+            ? remoteConfig.accessToken.trim() || props.accessToken.trim()
+            : props.accessToken.trim() || remoteConfig.accessToken.trim()
         const productHandle = props.productHandle.trim()
+        const productNo = props.productNo.trim()
+        const variantId = props.variantId.trim()
+        const normalizedProductHandle = productHandle || productNo
+        const productReferenceValue = normalizedProductHandle
 
-        if (!storeDomain || !shopNo || !accessToken || !productHandle) {
+        if (!storeDomain || !shopNo || !accessToken || !productReferenceValue) {
+            setResolvedProductNo("")
+            setResolvedSelectedVariantId("")
+            setContextDebugJson("")
             container.innerHTML = ""
             setRenderStatus("idle")
             return
@@ -970,24 +568,22 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
         const buttonRadius = `${props.addToCartBorderRadius}px`
         const buttonBorder = `${props.addToCartBorderWidth}px solid ${props.addToCartBorderColor}`
         const bodyLineHeight = `${Math.round(props.bodyFontSize * 1.6)}px`
+        const contextReferenceAttribute = `handle="${escapeHtmlAttribute(
+            normalizedProductHandle
+        )}"`
         setRenderStatus("mounting")
+
+        setDebugMessage("")
 
         container.innerHTML = `
             <style>
                 .c24-commerce {
                     display: flex;
                     flex-direction: column;
-                    gap: 0;
-                    width: 100%;
-                    font-family: ${escapeHtmlAttribute(props.bodyFontFamily)};
-                    color: #000000;
-                }
-
-                .c24-commerce__actions {
-                    display: flex;
-                    flex-direction: column;
                     gap: 10px;
                     width: ${props.addToCartWidth}%;
+                    font-family: ${escapeHtmlAttribute(props.bodyFontFamily)};
+                    color: #000000;
                 }
 
                 .c24-commerce__button {
@@ -1027,32 +623,30 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                 access-token="${escapeHtmlAttribute(accessToken)}"
             ></cafe24-store>
 
-            <cafe24-context type="product" handle="${escapeHtmlAttribute(productHandle)}">
+            <cafe24-context type="product" ${contextReferenceAttribute}>
                 <template>
                     <div class="c24-commerce">
-                        <div class="c24-commerce__actions">
-                            <button
-                                type="button"
-                                class="c24-commerce__button c24-commerce__button--cart"
-                                onclick="document.getElementById('${escapeHtmlAttribute(ids.cartId)}')?.addLine(event)?.showModal?.()"
-                                cafe24-attr--disabled="!isSelling || !isPurchasable"
-                            >
-                                ${escapeHtmlAttribute(props.addToCartLabel)}
-                            </button>
+                        <button
+                            type="button"
+                            class="c24-commerce__button c24-commerce__button--cart"
+                            onclick="document.getElementById('${escapeHtmlAttribute(ids.cartId)}')?.addLine(event)?.showModal?.()"
+                            cafe24-attr--disabled="!isSelling || !isPurchasable"
+                        >
+                            ${escapeHtmlAttribute(props.addToCartLabel)}
+                        </button>
 
-                            <button
-                                type="button"
-                                class="c24-commerce__button c24-commerce__button--buy"
-                                onclick="document.getElementById('${escapeHtmlAttribute(ids.storeId)}')?.buyNow(event)"
-                                cafe24-attr--disabled="!isSelling || !isPurchasable"
-                            >
-                                ${escapeHtmlAttribute(props.buyNowLabel)}
-                            </button>
-                        </div>
+                        <button
+                            type="button"
+                            class="c24-commerce__button c24-commerce__button--buy"
+                            onclick="document.getElementById('${escapeHtmlAttribute(ids.storeId)}')?.buyNow(event)"
+                            cafe24-attr--disabled="!isSelling || !isPurchasable"
+                        >
+                            ${escapeHtmlAttribute(props.buyNowLabel)}
+                        </button>
                     </div>
                 </template>
                 <div cafe24-loading-placeholder style="font-family: ${escapeHtmlAttribute(props.bodyFontFamily)}; font-size: ${props.bodyFontSize}px; line-height: ${bodyLineHeight}; color: #000000;">
-                    Loading Cafe24 product...
+                    Loading Cafe24 buttons...
                 </div>
             </cafe24-context>
 
@@ -1071,8 +665,118 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
 
         syncRenderedState()
 
+        const contextElement = container.querySelector<HTMLElement>(
+            "cafe24-context"
+        )
+        const storeElement = container.querySelector<HTMLElement>("cafe24-store")
+        const syncContextDebugInfo = () => {
+            if (!contextElement) return
+
+            const contextData = (
+                contextElement as HTMLElement & {
+                    getContextData?: () => {
+                        productNo?: string | number
+                        product_no?: string | number
+                        selectedVariantId?: string | number | null
+                        productHandle?: string
+                        handle?: string
+                        [key: string]: unknown
+                    } | null
+                }
+            ).getContextData?.()
+
+            const nextProductNo = String(
+                contextData?.productNo ?? contextData?.product_no ?? ""
+            ).trim()
+            const nextSelectedVariantId = String(
+                contextData?.selectedVariantId ?? ""
+            ).trim()
+
+            setResolvedProductNo(nextProductNo)
+            setResolvedSelectedVariantId(nextSelectedVariantId)
+            setContextDebugJson(
+                contextData
+                    ? JSON.stringify(contextData, null, 2)
+                    : "(getContextData() returned nothing)"
+            )
+        }
+        const applyManualVariantSelection = () => {
+            if (!variantId || !contextElement) return
+
+            const setSelectedVariant = (
+                contextElement as HTMLElement & {
+                    setSelectedVariant?: (nextVariantId: string) => void
+                }
+            ).setSelectedVariant
+
+            if (typeof setSelectedVariant === "function") {
+                setSelectedVariant.call(contextElement, variantId)
+            }
+
+            syncContextDebugInfo()
+        }
+
+        syncContextDebugInfo()
+        applyManualVariantSelection()
+        const syncElementDebugInfo = (event?: Event) => {
+            const eventType = event?.type || "unknown"
+            const detail = (() => {
+                const rawDetail = (event as Event & { detail?: unknown })?.detail
+                if (!rawDetail) return ""
+
+                try {
+                    return JSON.stringify(rawDetail, null, 2)
+                } catch (_error) {
+                    return String(rawDetail)
+                }
+            })()
+
+            const storeHtml = storeElement?.outerHTML
+                ? storeElement.outerHTML.slice(0, 600)
+                : ""
+            const contextHtml = contextElement?.outerHTML
+                ? contextElement.outerHTML.slice(0, 600)
+                : ""
+
+            setDebugMessage(
+                [
+                    `Last Cafe24 event: ${eventType}`,
+                    detail ? `Detail: ${detail}` : "",
+                    storeHtml ? `Store snapshot: ${storeHtml}` : "",
+                    contextHtml ? `Context snapshot: ${contextHtml}` : "",
+                ]
+                    .filter(Boolean)
+                    .join("\n\n")
+            )
+        }
+        contextElement?.addEventListener(
+            "cafe24-context-rendered",
+            applyManualVariantSelection as EventListener
+        )
+        contextElement?.addEventListener(
+            "cafe24-variant-changed",
+            syncContextDebugInfo as EventListener
+        )
+        contextElement?.addEventListener(
+            "cafe24-context-rendered",
+            syncElementDebugInfo as EventListener
+        )
+        contextElement?.addEventListener(
+            "cafe24-variant-changed",
+            syncElementDebugInfo as EventListener
+        )
+        contextElement?.addEventListener(
+            "error",
+            syncElementDebugInfo as EventListener
+        )
+        storeElement?.addEventListener(
+            "error",
+            syncElementDebugInfo as EventListener
+        )
+
         const observer = new MutationObserver(() => {
             syncRenderedState()
+            syncContextDebugInfo()
         })
         observer.observe(container, {
             childList: true,
@@ -1088,6 +792,30 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
         return () => {
             observer.disconnect()
             window.clearTimeout(timeoutId)
+            contextElement?.removeEventListener(
+                "cafe24-context-rendered",
+                applyManualVariantSelection as EventListener
+            )
+            contextElement?.removeEventListener(
+                "cafe24-variant-changed",
+                syncContextDebugInfo as EventListener
+            )
+            contextElement?.removeEventListener(
+                "cafe24-context-rendered",
+                syncElementDebugInfo as EventListener
+            )
+            contextElement?.removeEventListener(
+                "cafe24-variant-changed",
+                syncElementDebugInfo as EventListener
+            )
+            contextElement?.removeEventListener(
+                "error",
+                syncElementDebugInfo as EventListener
+            )
+            storeElement?.removeEventListener(
+                "error",
+                syncElementDebugInfo as EventListener
+            )
         }
     }, [
         props.accessToken,
@@ -1105,21 +833,104 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
         props.enabled,
         props.productHandle,
         props.shopNo,
+        props.storeDomain,
+        props.variantId,
         remoteConfig.accessToken,
         remoteConfig.shopNo,
         remoteConfig.storeDomain,
         scriptStatus,
-        props.storeDomain,
     ])
 
-    const resolvedStoreDomain =
-        props.storeDomain.trim() || remoteConfig.storeDomain.trim()
-    const resolvedShopNo = props.shopNo.trim() || remoteConfig.shopNo.trim()
-    const resolvedAccessToken =
-        props.accessToken.trim() || remoteConfig.accessToken.trim()
-    const resolvedConfigSource = props.accessToken.trim()
-        ? "manual-framer-token"
-        : remoteConfig.source.trim() || "backend"
+    const variantLookupUrl =
+        props.backendUrl.trim() &&
+        (resolvedProductNo || props.productNo.trim())
+            ? joinUrl(
+                  props.backendUrl,
+                  `/api/product/variants?productNo=${encodeURIComponent(
+                      resolvedProductNo || props.productNo.trim()
+                  )}`
+              )
+            : ""
+
+    React.useEffect(() => {
+        if (!props.showVariantHelper || !variantLookupUrl) {
+            setVariantRecords([])
+            setVariantLookupMessage("")
+            return
+        }
+
+        let isCancelled = false
+        setVariantLookupMessage("Loading variant records...")
+
+        window
+            .fetch(variantLookupUrl, {
+                method: "GET",
+            })
+            .then(async (response) => {
+                const result = await response
+                    .json()
+                    .catch(() => ({ ok: false, message: "Invalid JSON" }))
+
+                if (!response.ok) {
+                    throw new Error(
+                        String(
+                            result?.message ||
+                                "Unable to load Cafe24 variant records."
+                        )
+                    )
+                }
+
+                if (isCancelled) return
+
+                const nextVariants = Array.isArray(result?.variants)
+                    ? result.variants
+                    : []
+                setVariantRecords(nextVariants)
+                setVariantLookupMessage(
+                    nextVariants.length > 0
+                        ? ""
+                        : "No variant records were returned for this product."
+                )
+            })
+            .catch((error) => {
+                if (isCancelled) return
+
+                setVariantRecords([])
+                setVariantLookupMessage(
+                    error instanceof Error
+                        ? error.message
+                        : "Unable to load Cafe24 variant records."
+                )
+            })
+
+        return () => {
+            isCancelled = true
+        }
+    }, [props.showVariantHelper, variantLookupUrl])
+
+    const manualProductNo = props.productNo.trim()
+    const manualVariantCode = props.variantId.trim()
+    const shouldPreferBackendConfig = Boolean(props.backendUrl.trim())
+    const resolvedStoreDomain = shouldPreferBackendConfig
+        ? normalizeStoreDomain(remoteConfig.storeDomain) ||
+          normalizeStoreDomain(props.storeDomain)
+        : normalizeStoreDomain(props.storeDomain) ||
+          normalizeStoreDomain(remoteConfig.storeDomain)
+    const resolvedShopNo = shouldPreferBackendConfig
+        ? remoteConfig.shopNo.trim() || props.shopNo.trim()
+        : props.shopNo.trim() || remoteConfig.shopNo.trim()
+    const resolvedAccessToken = shouldPreferBackendConfig
+        ? remoteConfig.accessToken.trim() || props.accessToken.trim()
+        : props.accessToken.trim() || remoteConfig.accessToken.trim()
+    const resolvedConfigSource = shouldPreferBackendConfig
+        ? remoteConfig.source.trim() || debugInfo?.source || "(not available)"
+        : props.accessToken.trim()
+          ? "manual-framer-token"
+          : remoteConfig.source.trim() || debugInfo?.source || "(not available)"
+    const hasNumericOnlyHandle = Boolean(
+        props.productHandle.trim() &&
+            /^\d+$/.test(props.productHandle.trim())
+    )
     const isConfigured = Boolean(
         resolvedStoreDomain &&
             resolvedShopNo &&
@@ -1127,92 +938,248 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
             props.productHandle.trim()
     )
 
+    const helperBlock = props.showVariantHelper ? (
+        <div
+            style={{
+                ...cafe24NoticeStyle,
+                marginTop: 10,
+                fontFamily: props.bodyFontFamily,
+                fontSize: props.bodyFontSize,
+                lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
+            }}
+        >
+            Variant helper status:
+            <br />
+            Product handle:{" "}
+            <code>{props.productHandle.trim() || "(missing)"}</code>
+            <br />
+            Product no: <code>{manualProductNo || "(missing)"}</code>
+            <br />
+            Variant code field: <code>{manualVariantCode || "(blank)"}</code>
+            <br />
+            Backend URL: <code>{props.backendUrl.trim() || "(missing)"}</code>
+            <br />
+            Store domain: <code>{resolvedStoreDomain || "(missing)"}</code>
+            <br />
+            Shop no: <code>{resolvedShopNo || "(missing)"}</code>
+            <br />
+            Config status: <code>{configStatus}</code>
+            <br />
+            Script status: <code>{scriptStatus}</code>
+            <br />
+            Render status: <code>{renderStatus}</code>
+            <br />
+            CTA mode: <code>cafe24-web-components</code>
+            <br />
+            Backend token source: <code>{resolvedConfigSource}</code>
+            {debugInfo?.tokenStoreSource ? (
+                <>
+                    <br />
+                    Token store source: <code>{debugInfo.tokenStoreSource}</code>
+                </>
+            ) : null}
+            {debugInfo?.tokenStorePath ? (
+                <>
+                    <br />
+                    Token store path: <code>{debugInfo.tokenStorePath}</code>
+                </>
+            ) : null}
+            {debugInfo ? (
+                <>
+                    <br />
+                    Token store durable:{" "}
+                    <code>{String(debugInfo.tokenStoreIsDurable)}</code>
+                </>
+            ) : null}
+            {debugInfo ? (
+                <>
+                    <br />
+                    Persisted refresh token:{" "}
+                    <code>{String(debugInfo.hasPersistedRefreshToken)}</code>
+                </>
+            ) : null}
+            {debugInfo?.persistedRefreshTokenExpiresAt ? (
+                <>
+                    <br />
+                    Persisted refresh expiry:{" "}
+                    <code>{debugInfo.persistedRefreshTokenExpiresAt}</code>
+                </>
+            ) : null}
+            {hasNumericOnlyHandle ? (
+                <>
+                    <br />
+                    Web Components warning: <code>product handle looks numeric</code>
+                </>
+            ) : null}
+            {resolvedProductNo ? (
+                <>
+                    <br />
+                    Resolved product no: <code>{resolvedProductNo}</code>
+                </>
+            ) : null}
+            {resolvedSelectedVariantId ? (
+                <>
+                    <br />
+                    Selected variant id: <code>{resolvedSelectedVariantId}</code>
+                </>
+            ) : null}
+            {variantLookupUrl ? (
+                <>
+                    <br />
+                    Variant lookup: <code>{variantLookupUrl}</code>
+                </>
+            ) : null}
+            {variantLookupMessage ? (
+                <>
+                    <br />
+                    {variantLookupMessage}
+                </>
+            ) : null}
+            {contextDebugJson ? (
+                <>
+                    <br />
+                    <br />
+                    Cafe24 context data:
+                    <div
+                        style={{
+                            marginTop: 8,
+                            padding: "10px 12px",
+                            borderRadius: 8,
+                            background: "rgba(0, 0, 0, 0.04)",
+                            fontFamily: "monospace",
+                            fontSize: Math.max(12, props.bodyFontSize - 1),
+                            lineHeight: "1.45",
+                            whiteSpace: "pre-wrap",
+                            overflowWrap: "anywhere",
+                        }}
+                    >
+                        {contextDebugJson}
+                    </div>
+                </>
+            ) : null}
+            {debugMessage ? (
+                <>
+                    <br />
+                    <br />
+                    Cafe24 element debug:
+                    <div
+                        style={{
+                            marginTop: 8,
+                            padding: "10px 12px",
+                            borderRadius: 8,
+                            background: "rgba(0, 0, 0, 0.04)",
+                            fontFamily: "monospace",
+                            fontSize: Math.max(12, props.bodyFontSize - 1),
+                            lineHeight: "1.45",
+                            whiteSpace: "pre-wrap",
+                            overflowWrap: "anywhere",
+                        }}
+                    >
+                        {debugMessage}
+                    </div>
+                </>
+            ) : null}
+            {variantRecords.length > 0 ? (
+                <>
+                    <br />
+                    <br />
+                    Cafe24 variants:
+                    {variantRecords.map((variant, index) => {
+                        const variantId = String(
+                            variant?.variant_id ??
+                                variant?.variantId ??
+                                variant?.id ??
+                                ""
+                        ).trim()
+                        const variantCode = String(
+                            variant?.variants_code ??
+                                variant?.variant_code ??
+                                variant?.item_code ??
+                                variant?.product_code ??
+                                ""
+                        ).trim()
+                        const optionSummary = [
+                            variant?.options,
+                            variant?.option_value,
+                            variant?.option_name,
+                            variant?.value,
+                        ]
+                            .map((value) => String(value || "").trim())
+                            .find(Boolean)
+
+                        return (
+                            <React.Fragment key={`variant-${index}`}>
+                                <br />
+                                <code>
+                                    #{index + 1}
+                                    {variantId ? ` | id: ${variantId}` : ""}
+                                    {variantCode ? ` | code: ${variantCode}` : ""}
+                                    {optionSummary
+                                        ? ` | option: ${optionSummary}`
+                                        : ""}
+                                </code>
+                            </React.Fragment>
+                        )
+                    })}
+                </>
+            ) : null}
+        </div>
+    ) : null
+
     if (!props.enabled) return null
-
-    if (configStatus === "loading" && !isConfigured) {
-        return (
-            <div
-                style={{
-                    ...cafe24NoticeStyle,
-                    fontFamily: props.bodyFontFamily,
-                    fontSize: props.bodyFontSize,
-                    lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
-                }}
-            >
-                Loading Cafe24 storefront config...
-            </div>
-        )
-    }
-
-    if (configStatus === "error" && !isConfigured) {
-        return (
-            <div
-                style={{
-                    ...cafe24NoticeStyle,
-                    fontFamily: props.bodyFontFamily,
-                    fontSize: props.bodyFontSize,
-                    lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
-                }}
-            >
-                {configMessage ||
-                    "Cafe24 storefront config failed to load from the backend."}
-            </div>
-        )
-    }
 
     if (!isConfigured) {
         return (
-            <div
-                style={{
-                    ...cafe24NoticeStyle,
-                    fontFamily: props.bodyFontFamily,
-                    fontSize: props.bodyFontSize,
-                    lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
-                }}
-            >
-                Add your Cafe24 `product handle` in Framer, then either supply
-                `store-domain`, `shop-no`, and `access-token` directly or add a
-                backend URL that exposes `/api/storefront/config`.
-            </div>
-        )
-    }
-
-    if (scriptStatus === "error") {
-        return (
-            <div
-                style={{
-                    ...cafe24NoticeStyle,
-                    fontFamily: props.bodyFontFamily,
-                    fontSize: props.bodyFontSize,
-                    lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
-                }}
-            >
-                Cafe24 Web Components failed to load. This usually means the
-                Cafe24 script was blocked or could not initialize in the current
-                Framer environment.
-            </div>
-        )
-    }
-
-    if (scriptStatus !== "ready") {
-        return (
-            <div
-                style={{
-                    ...cafe24NoticeStyle,
-                    fontFamily: props.bodyFontFamily,
-                    fontSize: props.bodyFontSize,
-                    lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
-                }}
-            >
-                Loading Cafe24 commerce buttons...
-            </div>
+            <>
+                <div
+                    style={{
+                        ...cafe24NoticeStyle,
+                        fontFamily: props.bodyFontFamily,
+                        fontSize: props.bodyFontSize,
+                        lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
+                    }}
+                >
+                    Add your Cafe24 `product handle` plus `store-domain`,
+                    `shop-no`, and `access-token`, or provide a backend URL
+                    that exposes `/api/storefront/config`. Cafe24 Web
+                    Components need the product handle/slug for product
+                    context.
+                </div>
+                {helperBlock}
+            </>
         )
     }
 
     return (
         <>
-            <div ref={containerRef} style={{ width: "100%" }} />
-            {renderStatus === "timeout" ? (
+            {configStatus === "loading" ? (
+                <div
+                    style={{
+                        ...cafe24NoticeStyle,
+                        marginBottom: 10,
+                        fontFamily: props.bodyFontFamily,
+                        fontSize: props.bodyFontSize,
+                        lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
+                    }}
+                >
+                    Checking Cafe24 backend status...
+                </div>
+            ) : null}
+            {configStatus === "error" ? (
+                <div
+                    style={{
+                        ...cafe24NoticeStyle,
+                        marginBottom: 10,
+                        fontFamily: props.bodyFontFamily,
+                        fontSize: props.bodyFontSize,
+                        lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
+                    }}
+                >
+                    {configMessage ||
+                        "Cafe24 backend auth/config check failed."}
+                </div>
+            ) : null}
+            {scriptStatus === "error" ? (
                 <div
                     style={{
                         ...cafe24NoticeStyle,
@@ -1222,63 +1189,11 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                         lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
                     }}
                 >
-                    Cafe24 loaded, but the product content did not render. This
-                    usually means the `product handle` is invalid, the token
-                    does not have the right access, or the product requires a
-                    variant selection before buttons can appear.
-                    <br />
-                    <br />
-                    Store domain:{" "}
-                    <code>{resolvedStoreDomain || "(missing)"}</code>
-                    <br />
-                    Shop no: <code>{resolvedShopNo || "(missing)"}</code>
-                    <br />
-                    Product handle:{" "}
-                    <code>{props.productHandle.trim() || "(missing)"}</code>
-                    <br />
-                    Token source: <code>{resolvedConfigSource}</code>
-                    {debugInfo ? (
-                        <>
-                            <br />
-                            Config path:{" "}
-                            <code>
-                                {debugInfo.storefrontConfigPath || "(missing)"}
-                            </code>
-                            <br />
-                            Backend token source:{" "}
-                            <code>{debugInfo.source || "(unknown)"}</code>
-                            <br />
-                            Token preview:{" "}
-                            <code>
-                                {debugInfo.accessTokenPreview || "(missing)"}
-                            </code>
-                            <br />
-                            Token length:{" "}
-                            <code>{String(debugInfo.accessTokenLength)}</code>
-                            <br />
-                            OAuth refresh configured:{" "}
-                            <code>
-                                {debugInfo.hasOauthRefreshConfig ? "yes" : "no"}
-                            </code>
-                        </>
-                    ) : debugMessage ? (
-                        <>
-                            <br />
-                            Backend debug route: <code>{debugMessage}</code>
-                        </>
-                    ) : null}
-                    {/^\d+$/.test(props.productHandle.trim()) ? (
-                        <>
-                            <br />
-                            <br />
-                            This `product handle` looks numeric. If you entered
-                            a Cafe24 product number instead of the Web
-                            Components product handle/slug, Cafe24 will reject
-                            the request.
-                        </>
-                    ) : null}
+                    Cafe24 Web Components failed to load.
                 </div>
             ) : null}
+            <div ref={containerRef} style={{ width: "100%" }} />
+            {helperBlock}
         </>
     )
 }
@@ -1292,26 +1207,15 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
 export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
     const carouselSlideDurationMs = 920
     const useCafe24 = props.useCafe24 ?? false
+    const showCafe24VariantHelper = props.showCafe24VariantHelper ?? false
     const cafe24BackendUrl = props.cafe24BackendUrl?.trim() || ""
-    const cafe24MemberId = props.cafe24MemberId?.trim() || ""
-    const cafe24ProductNo = props.cafe24ProductNo?.trim() || ""
-    const cafe24VariantCode = props.cafe24VariantCode?.trim() || ""
-    const cafe24Quantity = props.cafe24Quantity ?? 1
-    const cafe24CartRedirectUrl = props.cafe24CartRedirectUrl?.trim() || ""
-    const cafe24BuyNowRedirectUrl = props.cafe24BuyNowRedirectUrl?.trim() || ""
     const cafe24StoreDomain = props.cafe24StoreDomain?.trim() || ""
     const cafe24ShopNo = props.cafe24ShopNo?.trim() || "1"
     const cafe24AccessToken = props.cafe24AccessToken?.trim() || ""
     const cafe24ProductHandle = props.cafe24ProductHandle?.trim() || ""
+    const cafe24ProductNo = props.cafe24ProductNo?.trim() || ""
+    const cafe24VariantId = props.cafe24VariantId?.trim() || ""
     const cafe24BuyNowLabel = props.cafe24BuyNowLabel?.trim() || "Buy now"
-    const canUseCafe24WebComponents = Boolean(
-        cafe24ProductHandle &&
-            (cafe24BackendUrl ||
-                (cafe24StoreDomain && cafe24ShopNo && cafe24AccessToken))
-    )
-    const canUseCafe24BackendFallback = Boolean(
-        cafe24BackendUrl && cafe24ProductNo
-    )
     const title = props.title?.trim() || "REVERSO PUFFA"
     const description = props.description?.trim() || defaultDescription
     const price = props.price?.trim() || "$139"
@@ -1386,13 +1290,6 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
         "description" | "size" | "shipping" | null
     >(null)
     const [isNarrowLayout, setIsNarrowLayout] = React.useState(false)
-    const selectedColorLabel =
-        colorButtons[
-            Math.min(
-                Math.max(0, selectedColorIndex),
-                Math.max(0, colorButtons.length - 1)
-            )
-        ]?.label?.trim() || ""
     const mediaColumnRef = React.useRef<HTMLDivElement | null>(null)
     const carouselMedia = React.useMemo<CarouselMediaItem[]>(() => {
         return carouselItems
@@ -1419,10 +1316,6 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
             .filter((item) => Boolean(item.src))
     }, [carouselItems])
     const imageCount = carouselMedia.length
-    const primaryProductImageSrc =
-        carouselMedia.find((item) => item.kind === "image")?.src ||
-        carouselMedia[0]?.src ||
-        ""
     const sliderRef = React.useRef<any>(null)
     const refreshSliderLayout = React.useCallback(() => {
         if (!sliderRef.current) return
@@ -2099,47 +1992,36 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                         )
                                     })}
                                 </div>
+                                {cafe24VariantId ? (
+                                    <div
+                                        style={{
+                                            ...cafe24NoticeStyle,
+                                            fontFamily: bodyFontFamily,
+                                            fontSize: bodyFontSize,
+                                            lineHeight: `${Math.round(
+                                                bodyFontSize * 1.6
+                                            )}px`,
+                                        }}
+                                    >
+                                        Manual variant override:{" "}
+                                        <code>{cafe24VariantId}</code>
+                                    </div>
+                                ) : null}
 
-                                {useCafe24 && canUseCafe24WebComponents ? (
-                                    <Cafe24CommerceBridge
-                                        enabled={useCafe24}
-                                        backendUrl={cafe24BackendUrl}
-                                        storeDomain={cafe24StoreDomain}
-                                        shopNo={cafe24ShopNo}
-                                        accessToken={cafe24AccessToken}
-                                        productHandle={cafe24ProductHandle}
-                                        addToCartLabel={buttonLabel}
-                                        buyNowLabel={cafe24BuyNowLabel}
-                                        bodyFontFamily={bodyFontFamily}
-                                        bodyFontSize={bodyFontSize}
-                                        buttonFontSize={buttonFontSize}
-                                        addToCartWidth={addToCartWidth}
-                                        addToCartFill={addToCartFill}
-                                        addToCartBorderColor={
-                                            addToCartBorderColor
-                                        }
-                                        addToCartBorderWidth={
-                                            addToCartBorderWidth
-                                        }
-                                        addToCartBorderRadius={
-                                            addToCartBorderRadius
-                                        }
-                                        addToCartTextColor={addToCartTextColor}
-                                    />
-                                ) : useCafe24 && canUseCafe24BackendFallback ? (
-                                    cafe24MemberId ? (
-                                        <Cafe24BackendCommerceBridge
+                                {useCafe24 ? (
+                                    <>
+                                        <Cafe24CommerceBridge
                                             enabled={useCafe24}
+                                            showVariantHelper={
+                                                showCafe24VariantHelper
+                                            }
                                             backendUrl={cafe24BackendUrl}
+                                            storeDomain={cafe24StoreDomain}
+                                            shopNo={cafe24ShopNo}
+                                            accessToken={cafe24AccessToken}
+                                            productHandle={cafe24ProductHandle}
                                             productNo={cafe24ProductNo}
-                                            variantCode={cafe24VariantCode}
-                                            quantity={cafe24Quantity}
-                                            cartRedirectUrl={
-                                                cafe24CartRedirectUrl
-                                            }
-                                            buyNowRedirectUrl={
-                                                cafe24BuyNowRedirectUrl
-                                            }
+                                            variantId={cafe24VariantId}
                                             addToCartLabel={buttonLabel}
                                             buyNowLabel={cafe24BuyNowLabel}
                                             bodyFontFamily={bodyFontFamily}
@@ -2160,72 +2042,7 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                                 addToCartTextColor
                                             }
                                         />
-                                    ) : (
-                                        <Cafe24GuestCommerceBridge
-                                            enabled={useCafe24}
-                                            backendUrl={cafe24BackendUrl}
-                                            productNo={cafe24ProductNo}
-                                            variantCode={cafe24VariantCode}
-                                            quantity={cafe24Quantity}
-                                            cartRedirectUrl={
-                                                cafe24CartRedirectUrl
-                                            }
-                                            buyNowRedirectUrl={
-                                                cafe24BuyNowRedirectUrl
-                                            }
-                                            addToCartLabel={buttonLabel}
-                                            buyNowLabel={cafe24BuyNowLabel}
-                                            bodyFontFamily={bodyFontFamily}
-                                            bodyFontSize={bodyFontSize}
-                                            buttonFontSize={buttonFontSize}
-                                            addToCartWidth={addToCartWidth}
-                                            addToCartFill={addToCartFill}
-                                            addToCartBorderColor={
-                                                addToCartBorderColor
-                                            }
-                                            addToCartBorderWidth={
-                                                addToCartBorderWidth
-                                            }
-                                            addToCartBorderRadius={
-                                                addToCartBorderRadius
-                                            }
-                                            addToCartTextColor={
-                                                addToCartTextColor
-                                            }
-                                            productTitle={title}
-                                            optionLabel={selectedColorLabel}
-                                            priceLabel={price}
-                                            productImageSrc={
-                                                primaryProductImageSrc
-                                            }
-                                        />
-                                    )
-                                ) : useCafe24 ? (
-                                    <Cafe24CommerceBridge
-                                        enabled={useCafe24}
-                                        backendUrl={cafe24BackendUrl}
-                                        storeDomain={cafe24StoreDomain}
-                                        shopNo={cafe24ShopNo}
-                                        accessToken={cafe24AccessToken}
-                                        productHandle={cafe24ProductHandle}
-                                        addToCartLabel={buttonLabel}
-                                        buyNowLabel={cafe24BuyNowLabel}
-                                        bodyFontFamily={bodyFontFamily}
-                                        bodyFontSize={bodyFontSize}
-                                        buttonFontSize={buttonFontSize}
-                                        addToCartWidth={addToCartWidth}
-                                        addToCartFill={addToCartFill}
-                                        addToCartBorderColor={
-                                            addToCartBorderColor
-                                        }
-                                        addToCartBorderWidth={
-                                            addToCartBorderWidth
-                                        }
-                                        addToCartBorderRadius={
-                                            addToCartBorderRadius
-                                        }
-                                        addToCartTextColor={addToCartTextColor}
-                                    />
+                                    </>
                                 ) : (
                                     <button style={responsiveCtaStyle}>
                                         <span style={responsiveButtonTextStyle}>
@@ -2351,17 +2168,14 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
 
 MirrorShopComponent.defaultProps = {
     useCafe24: false,
+    showCafe24VariantHelper: false,
     cafe24BackendUrl: "",
-    cafe24MemberId: "",
-    cafe24ProductNo: "",
-    cafe24VariantCode: "",
-    cafe24Quantity: 1,
-    cafe24CartRedirectUrl: "",
-    cafe24BuyNowRedirectUrl: "",
     cafe24StoreDomain: "",
     cafe24ShopNo: "1",
     cafe24AccessToken: "",
     cafe24ProductHandle: "",
+    cafe24ProductNo: "",
+    cafe24VariantId: "",
     cafe24BuyNowLabel: "Buy now",
     title: "REVERSO PUFFA",
     description: defaultDescription,
@@ -2423,48 +2237,15 @@ addPropertyControls(MirrorShopComponent, {
         title: "Use Cafe24",
         defaultValue: false,
     },
+    showCafe24VariantHelper: {
+        type: ControlType.Boolean,
+        title: "Show Variant Helper",
+        defaultValue: false,
+    },
     cafe24BackendUrl: {
         type: ControlType.String,
         title: "Backend URL",
         placeholder: "https://your-app.vercel.app",
-        defaultValue: "",
-    },
-    cafe24MemberId: {
-        type: ControlType.String,
-        title: "Member ID",
-        placeholder: "leave blank for guest",
-        defaultValue: "",
-    },
-    cafe24ProductNo: {
-        type: ControlType.String,
-        title: "Product No",
-        placeholder: "11",
-        defaultValue: "",
-    },
-    cafe24VariantCode: {
-        type: ControlType.String,
-        title: "Variant Code",
-        placeholder: "optional",
-        defaultValue: "",
-    },
-    cafe24Quantity: {
-        type: ControlType.Number,
-        title: "Quantity",
-        min: 1,
-        max: 20,
-        step: 1,
-        defaultValue: 1,
-    },
-    cafe24CartRedirectUrl: {
-        type: ControlType.String,
-        title: "Cart URL",
-        placeholder: "https://your-store.com/order/basket.html",
-        defaultValue: "",
-    },
-    cafe24BuyNowRedirectUrl: {
-        type: ControlType.String,
-        title: "Buy URL",
-        placeholder: "https://your-store.com/order/orderform.html",
         defaultValue: "",
     },
     cafe24StoreDomain: {
@@ -2488,6 +2269,18 @@ addPropertyControls(MirrorShopComponent, {
         type: ControlType.String,
         title: "Product Handle",
         placeholder: "product-handle-or-slug",
+        defaultValue: "",
+    },
+    cafe24ProductNo: {
+        type: ControlType.String,
+        title: "Product No",
+        placeholder: "numeric Cafe24 product number",
+        defaultValue: "",
+    },
+    cafe24VariantId: {
+        type: ControlType.String,
+        title: "Variant ID",
+        placeholder: "manual Cafe24 variant id",
         defaultValue: "",
     },
     cafe24BuyNowLabel: {

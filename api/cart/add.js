@@ -51,6 +51,7 @@ module.exports = async (req, res) => {
             ok: true,
             message: "Cart created successfully.",
             resolvedVariantCode: result.resolvedVariantCode,
+            strategy: result.strategy || "",
             cart: result.cart,
             cartRedirectUrl: getCafe24CartUrl(),
             checkoutRedirectUrl: getCafe24CheckoutUrl(),
@@ -62,6 +63,7 @@ module.exports = async (req, res) => {
                 error instanceof Error
                     ? error.message
                     : "Failed to create Cafe24 cart.",
+            failures: Array.isArray(error?.failures) ? error.failures : [],
         })
     }
 }

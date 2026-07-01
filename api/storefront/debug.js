@@ -1,10 +1,12 @@
 const {
     getCafe24StorefrontConfig,
+    getCafe24TokenStoreInfo,
     getCafe24StoreDomain,
     getPublicStoreBaseUrl,
     getShopNo,
     hasOauthRefreshConfig,
 } = require("../../lib/cafe24")
+const { readCafe24TokenStore } = require("../../lib/cafe24TokenStore")
 
 function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Origin", "*")
@@ -34,6 +36,8 @@ module.exports = async (req, res) => {
 
     try {
         const config = await getCafe24StorefrontConfig()
+        const tokenStoreInfo = getCafe24TokenStoreInfo()
+        const tokenStore = await readCafe24TokenStore()
 
         res.status(200).json({
             ok: true,
@@ -45,6 +49,12 @@ module.exports = async (req, res) => {
                 shopNo: getShopNo(),
                 publicStoreUrl: getPublicStoreBaseUrl(),
                 hasOauthRefreshConfig: hasOauthRefreshConfig(),
+                tokenStorePath: tokenStoreInfo.path,
+                tokenStoreSource: tokenStoreInfo.source,
+                tokenStoreIsDurable: tokenStoreInfo.isDurable,
+                hasPersistedRefreshToken: Boolean(tokenStore?.refreshToken),
+                persistedRefreshTokenExpiresAt:
+                    tokenStore?.refreshTokenExpiresAt || null,
                 hasAccessToken: Boolean(String(config?.accessToken || "").trim()),
                 accessTokenPreview: maskToken(config?.accessToken || ""),
                 accessTokenLength: String(config?.accessToken || "").trim().length,

@@ -10,3 +10,4 @@
 .venv-vbr
 /tmp
 env.txt
+.local/

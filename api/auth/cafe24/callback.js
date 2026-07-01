@@ -1,3 +1,5 @@
+const { writeCafe24TokenStore } = require("../../../lib/cafe24TokenStore")
+
 function getRequiredEnv(name) {
     const value = process.env[name]
     if (!value) {
@@ -45,6 +47,32 @@ function escapeHtml(value) {
 
 function getBasicAuthorizationHeader(clientId, clientSecret) {
     return `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`
+}
+
+function parseTokenTimestamp(value, fallbackMs = 0) {
+    const parsed = Date.parse(String(value || ""))
+    if (Number.isFinite(parsed)) return parsed
+    return fallbackMs > 0 ? Date.now() + fallbackMs : 0
+}
+
+function normalizeOauthTokenPayload(payload) {
+    const accessToken = String(payload?.access_token || "").trim()
+    const refreshToken = String(payload?.refresh_token || "").trim()
+    const accessTokenExpiresAt = parseTokenTimestamp(
+        payload?.expires_at,
+        45 * 60 * 1000
+    )
+    const refreshTokenExpiresAt = parseTokenTimestamp(
+        payload?.refresh_token_expires_at,
+        13 * 24 * 60 * 60 * 1000
+    )
+
+    return {
+        accessToken,
+        refreshToken,
+        accessTokenExpiresAt,
+        refreshTokenExpiresAt,
+    }
 }
 
 async function parseResponsePayload(response) {
@@ -270,6 +298,17 @@ module.exports = async (req, res) => {
             clientSecret,
             redirectUri,
         })
+        const tokenState = normalizeOauthTokenPayload(payload)
+        const tokenStoreResult = await writeCafe24TokenStore({
+            accessToken: tokenState.accessToken,
+            accessTokenExpiresAt: new Date(
+                tokenState.accessTokenExpiresAt
+            ).toISOString(),
+            refreshToken: tokenState.refreshToken,
+            refreshTokenExpiresAt: new Date(
+                tokenState.refreshTokenExpiresAt
+            ).toISOString(),
+        })
 
         res.status(200).send(`
 <!doctype html>
@@ -288,16 +327,20 @@ module.exports = async (req, res) => {
   <body>
     <main>
       <h1>Cafe24 OAuth complete</h1>
-      <p>Copy the values below into your Vercel environment variables before testing the Framer button.</p>
+      <p>The backend exchanged the authorization code successfully.</p>
       <p>Successful token exchange strategy: <code>${escapeHtml(strategy)}</code></p>
-      <p>Set these in Vercel:</p>
-      <p><code>CAFE24_REFRESH_TOKEN=${escapeHtml(payload?.refresh_token || "")}</code></p>
-      <p><code>CAFE24_REFRESH_TOKEN_EXPIRES_AT=${escapeHtml(payload?.refresh_token_expires_at || "")}</code></p>
-      <p><code>CAFE24_SCOPES=${escapeHtml(Array.isArray(payload?.scopes) ? payload.scopes.join(",") : payload?.scope || "")}</code></p>
-      <p><code>CAFE24_MALL_ID=${escapeHtml(payload?.mall_id || "")}</code></p>
+      <p>Token store write result:</p>
+      <p><code>${escapeHtml(
+          tokenStoreResult.ok
+              ? `persisted (${tokenStoreResult.source}) at ${tokenStoreResult.path}`
+              : tokenStoreResult.message || "not persisted"
+      )}</code></p>
+      <p><code>refresh_token_expires_at=${escapeHtml(payload?.refresh_token_expires_at || "")}</code></p>
+      <p><code>scope=${escapeHtml(Array.isArray(payload?.scopes) ? payload.scopes.join(",") : payload?.scope || "")}</code></p>
+      <p><code>mall_id=${escapeHtml(payload?.mall_id || "")}</code></p>
       <p>Current token response</p>
       <pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
-      <p>The access token expires quickly, so the backend should use the refresh token for future requests.</p>
+      <p>The backend will now try to reuse and rotate the stored refresh token automatically.</p>
     </main>
   </body>
 </html>`)
