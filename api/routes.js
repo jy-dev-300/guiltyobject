@@ -24,6 +24,7 @@ module.exports = async (req, res) => {
         routes: {
             ...getCafe24Urls(),
             storefrontConfigPath: "/api/storefront/config",
+            storefrontDebugPath: "/api/storefront/debug",
         },
     })
 }

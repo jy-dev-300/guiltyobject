@@ -247,10 +247,7 @@ function readShadowCart(): ShadowCartItem[] {
 function writeShadowCart(items: ShadowCartItem[]) {
     if (typeof window === "undefined") return
 
-    window.localStorage.setItem(
-        shadowCartStorageKey,
-        JSON.stringify(items)
-    )
+    window.localStorage.setItem(shadowCartStorageKey, JSON.stringify(items))
     window.dispatchEvent(new Event(shadowCartChangeEventName))
 }
 
@@ -287,12 +284,11 @@ function getShadowCartSignature(items: ShadowCartItem[]): string {
             quantity: Math.max(1, Math.floor(Number(item.quantity) || 1)),
         }))
         .sort((left, right) =>
-            getShadowCartItemKey(left).localeCompare(getShadowCartItemKey(right))
+            getShadowCartItemKey(left).localeCompare(
+                getShadowCartItemKey(right)
+            )
         )
-        .map(
-            (item) =>
-                `${item.productNo}:${item.variantCode}:${item.quantity}`
-        )
+        .map((item) => `${item.productNo}:${item.variantCode}:${item.quantity}`)
         .join("|")
 }
 
@@ -411,8 +407,7 @@ function Cafe24BackendCommerceBridge(props: Cafe24BackendCommerceBridgeProps) {
 
                 if (!response.ok) {
                     throw new Error(
-                        result?.message ||
-                            "Cafe24 backend request failed."
+                        result?.message || "Cafe24 backend request failed."
                     )
                 }
 
@@ -455,8 +450,8 @@ function Cafe24BackendCommerceBridge(props: Cafe24BackendCommerceBridgeProps) {
                     lineHeight: bodyLineHeight,
                 }}
             >
-                Add your Vercel backend URL and Cafe24 product number in
-                Framer to enable the backend-powered cart button.
+                Add your Vercel backend URL and Cafe24 product number in Framer
+                to enable the backend-powered cart button.
             </div>
         )
     }
@@ -483,9 +478,7 @@ function Cafe24BackendCommerceBridge(props: Cafe24BackendCommerceBridgeProps) {
                     opacity: status === "submitting" ? 0.6 : 1,
                 }}
             >
-                {status === "submitting"
-                    ? "Adding..."
-                    : props.addToCartLabel}
+                {status === "submitting" ? "Adding..." : props.addToCartLabel}
             </button>
 
             <button
@@ -630,8 +623,8 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
                     lineHeight: bodyLineHeight,
                 }}
             >
-                Add your Vercel backend URL and Cafe24 product number in
-                Framer to enable the guest shadow cart.
+                Add your Vercel backend URL and Cafe24 product number in Framer
+                to enable the guest shadow cart.
             </div>
         )
     }
@@ -704,16 +697,33 @@ type Cafe24CommerceBridgeProps = {
 
 function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
     const containerRef = React.useRef<HTMLDivElement | null>(null)
-    const idsRef = React.useRef<{ storeId: string; cartId: string } | null>(null)
+    const idsRef = React.useRef<{ storeId: string; cartId: string } | null>(
+        null
+    )
     const [remoteConfig, setRemoteConfig] = React.useState<{
         storeDomain: string
         shopNo: string
         accessToken: string
+        source: string
     }>({
         storeDomain: "",
         shopNo: "",
         accessToken: "",
+        source: "",
     })
+    const [debugInfo, setDebugInfo] = React.useState<{
+        storefrontConfigPath: string
+        source: string
+        expiresAt: string | null
+        storeDomain: string
+        shopNo: string
+        publicStoreUrl: string
+        hasOauthRefreshConfig: boolean
+        hasAccessToken: boolean
+        accessTokenPreview: string
+        accessTokenLength: number
+    } | null>(null)
+    const [debugMessage, setDebugMessage] = React.useState("")
     const [configStatus, setConfigStatus] = React.useState<
         "idle" | "loading" | "ready" | "error"
     >("idle")
@@ -787,7 +797,10 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                 storeDomain: "",
                 shopNo: "",
                 accessToken: "",
+                source: "",
             })
+            setDebugInfo(null)
+            setDebugMessage("")
             setConfigStatus("idle")
             setConfigMessage("")
             return
@@ -808,6 +821,7 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
         let isCancelled = false
         setConfigStatus("loading")
         setConfigMessage("")
+        setDebugMessage("")
 
         window
             .fetch(joinUrl(backendUrl, "/api/storefront/config"), {
@@ -820,16 +834,24 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
 
                 if (!response.ok) {
                     throw new Error(
-                        String(result?.message || "Unable to load Cafe24 storefront config.")
+                        String(
+                            result?.message ||
+                                "Unable to load Cafe24 storefront config."
+                        )
                     )
                 }
 
                 if (isCancelled) return
 
                 setRemoteConfig({
-                    storeDomain: String(result?.config?.storeDomain || "").trim(),
+                    storeDomain: String(
+                        result?.config?.storeDomain || ""
+                    ).trim(),
                     shopNo: String(result?.config?.shopNo || "").trim(),
-                    accessToken: String(result?.config?.accessToken || "").trim(),
+                    accessToken: String(
+                        result?.config?.accessToken || ""
+                    ).trim(),
+                    source: String(result?.config?.source || "").trim(),
                 })
                 setConfigStatus("ready")
             })
@@ -840,12 +862,67 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                     storeDomain: "",
                     shopNo: "",
                     accessToken: "",
+                    source: "",
                 })
                 setConfigStatus("error")
                 setConfigMessage(
                     error instanceof Error
                         ? error.message
                         : "Unable to load Cafe24 storefront config."
+                )
+            })
+
+        window
+            .fetch(joinUrl(backendUrl, "/api/storefront/debug"), {
+                method: "GET",
+            })
+            .then(async (response) => {
+                const result = await response
+                    .json()
+                    .catch(() => ({ ok: false, message: "Invalid JSON" }))
+
+                if (!response.ok) {
+                    throw new Error(
+                        String(
+                            result?.message ||
+                                "Unable to load Cafe24 storefront debug info."
+                        )
+                    )
+                }
+
+                if (isCancelled) return
+
+                setDebugInfo({
+                    storefrontConfigPath: String(
+                        result?.debug?.storefrontConfigPath || ""
+                    ).trim(),
+                    source: String(result?.debug?.source || "").trim(),
+                    expiresAt: result?.debug?.expiresAt || null,
+                    storeDomain: String(result?.debug?.storeDomain || "").trim(),
+                    shopNo: String(result?.debug?.shopNo || "").trim(),
+                    publicStoreUrl: String(
+                        result?.debug?.publicStoreUrl || ""
+                    ).trim(),
+                    hasOauthRefreshConfig: Boolean(
+                        result?.debug?.hasOauthRefreshConfig
+                    ),
+                    hasAccessToken: Boolean(result?.debug?.hasAccessToken),
+                    accessTokenPreview: String(
+                        result?.debug?.accessTokenPreview || ""
+                    ).trim(),
+                    accessTokenLength: Number(
+                        result?.debug?.accessTokenLength || 0
+                    ),
+                })
+            })
+            .catch((error) => {
+                if (isCancelled) return
+
+                setDebugInfo(null)
+                setDebugMessage(
+                    error instanceof Error
+                        ? error.message
+                        : "Unable to load Cafe24 storefront debug info."
                 )
             })
 
@@ -1040,6 +1117,9 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
     const resolvedShopNo = props.shopNo.trim() || remoteConfig.shopNo.trim()
     const resolvedAccessToken =
         props.accessToken.trim() || remoteConfig.accessToken.trim()
+    const resolvedConfigSource = props.accessToken.trim()
+        ? "manual-framer-token"
+        : remoteConfig.source.trim() || "backend"
     const isConfigured = Boolean(
         resolvedStoreDomain &&
             resolvedShopNo &&
@@ -1108,8 +1188,8 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                 }}
             >
                 Cafe24 Web Components failed to load. This usually means the
-                Cafe24 script was blocked or could not initialize in the
-                current Framer environment.
+                Cafe24 script was blocked or could not initialize in the current
+                Framer environment.
             </div>
         )
     }
@@ -1146,6 +1226,57 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                     usually means the `product handle` is invalid, the token
                     does not have the right access, or the product requires a
                     variant selection before buttons can appear.
+                    <br />
+                    <br />
+                    Store domain:{" "}
+                    <code>{resolvedStoreDomain || "(missing)"}</code>
+                    <br />
+                    Shop no: <code>{resolvedShopNo || "(missing)"}</code>
+                    <br />
+                    Product handle:{" "}
+                    <code>{props.productHandle.trim() || "(missing)"}</code>
+                    <br />
+                    Token source: <code>{resolvedConfigSource}</code>
+                    {debugInfo ? (
+                        <>
+                            <br />
+                            Config path:{" "}
+                            <code>
+                                {debugInfo.storefrontConfigPath || "(missing)"}
+                            </code>
+                            <br />
+                            Backend token source:{" "}
+                            <code>{debugInfo.source || "(unknown)"}</code>
+                            <br />
+                            Token preview:{" "}
+                            <code>
+                                {debugInfo.accessTokenPreview || "(missing)"}
+                            </code>
+                            <br />
+                            Token length:{" "}
+                            <code>{String(debugInfo.accessTokenLength)}</code>
+                            <br />
+                            OAuth refresh configured:{" "}
+                            <code>
+                                {debugInfo.hasOauthRefreshConfig ? "yes" : "no"}
+                            </code>
+                        </>
+                    ) : debugMessage ? (
+                        <>
+                            <br />
+                            Backend debug route: <code>{debugMessage}</code>
+                        </>
+                    ) : null}
+                    {/^\d+$/.test(props.productHandle.trim()) ? (
+                        <>
+                            <br />
+                            <br />
+                            This `product handle` looks numeric. If you entered
+                            a Cafe24 product number instead of the Web
+                            Components product handle/slug, Cafe24 will reject
+                            the request.
+                        </>
+                    ) : null}
                 </div>
             ) : null}
         </>
@@ -1167,19 +1298,18 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
     const cafe24VariantCode = props.cafe24VariantCode?.trim() || ""
     const cafe24Quantity = props.cafe24Quantity ?? 1
     const cafe24CartRedirectUrl = props.cafe24CartRedirectUrl?.trim() || ""
-    const cafe24BuyNowRedirectUrl =
-        props.cafe24BuyNowRedirectUrl?.trim() || ""
+    const cafe24BuyNowRedirectUrl = props.cafe24BuyNowRedirectUrl?.trim() || ""
     const cafe24StoreDomain = props.cafe24StoreDomain?.trim() || ""
     const cafe24ShopNo = props.cafe24ShopNo?.trim() || "1"
     const cafe24AccessToken = props.cafe24AccessToken?.trim() || ""
     const cafe24ProductHandle = props.cafe24ProductHandle?.trim() || ""
     const cafe24BuyNowLabel = props.cafe24BuyNowLabel?.trim() || "Buy now"
-    const hasCafe24WebComponentConfig = Boolean(
+    const canUseCafe24WebComponents = Boolean(
         cafe24ProductHandle &&
             (cafe24BackendUrl ||
                 (cafe24StoreDomain && cafe24ShopNo && cafe24AccessToken))
     )
-    const hasCafe24BackendConfig = Boolean(
+    const canUseCafe24BackendFallback = Boolean(
         cafe24BackendUrl && cafe24ProductNo
     )
     const title = props.title?.trim() || "REVERSO PUFFA"
@@ -1697,12 +1827,10 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                     {...sliderSettings}
                                 >
                                     {carouselMedia.map((mediaItem, index) => {
-                                        const topMargin =
-                                            mediaItem.topMargin
+                                        const topMargin = mediaItem.topMargin
                                         const bottomMargin =
                                             mediaItem.bottomMargin
-                                        const leftMargin =
-                                            mediaItem.leftMargin
+                                        const leftMargin = mediaItem.leftMargin
                                         const rightMargin =
                                             mediaItem.rightMargin
                                         const imageFit =
@@ -1972,7 +2100,7 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                     })}
                                 </div>
 
-                                {useCafe24 && hasCafe24WebComponentConfig ? (
+                                {useCafe24 && canUseCafe24WebComponents ? (
                                     <Cafe24CommerceBridge
                                         enabled={useCafe24}
                                         backendUrl={cafe24BackendUrl}
@@ -1996,11 +2124,9 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                         addToCartBorderRadius={
                                             addToCartBorderRadius
                                         }
-                                        addToCartTextColor={
-                                            addToCartTextColor
-                                        }
+                                        addToCartTextColor={addToCartTextColor}
                                     />
-                                ) : useCafe24 && hasCafe24BackendConfig ? (
+                                ) : useCafe24 && canUseCafe24BackendFallback ? (
                                     cafe24MemberId ? (
                                         <Cafe24BackendCommerceBridge
                                             enabled={useCafe24}
@@ -2098,15 +2224,11 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                         addToCartBorderRadius={
                                             addToCartBorderRadius
                                         }
-                                        addToCartTextColor={
-                                            addToCartTextColor
-                                        }
+                                        addToCartTextColor={addToCartTextColor}
                                     />
                                 ) : (
                                     <button style={responsiveCtaStyle}>
-                                        <span
-                                            style={responsiveButtonTextStyle}
-                                        >
+                                        <span style={responsiveButtonTextStyle}>
                                             <span>{buttonLabel}</span>
                                         </span>
                                     </button>
@@ -2147,7 +2269,8 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                                         style={{
                                                             ...bulletStyle,
                                                             lineHeight: `${Math.round(
-                                                                bodyFontSize * 1.6
+                                                                bodyFontSize *
+                                                                    1.6
                                                             )}px`,
                                                         }}
                                                     >
@@ -2364,7 +2487,7 @@ addPropertyControls(MirrorShopComponent, {
     cafe24ProductHandle: {
         type: ControlType.String,
         title: "Product Handle",
-        placeholder: "34",
+        placeholder: "product-handle-or-slug",
         defaultValue: "",
     },
     cafe24BuyNowLabel: {
