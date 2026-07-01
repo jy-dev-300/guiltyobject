@@ -684,6 +684,7 @@ function Cafe24GuestCommerceBridge(props: Cafe24GuestCommerceBridgeProps) {
 
 type Cafe24CommerceBridgeProps = {
     enabled: boolean
+    backendUrl: string
     storeDomain: string
     shopNo: string
     accessToken: string
@@ -704,6 +705,19 @@ type Cafe24CommerceBridgeProps = {
 function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
     const containerRef = React.useRef<HTMLDivElement | null>(null)
     const idsRef = React.useRef<{ storeId: string; cartId: string } | null>(null)
+    const [remoteConfig, setRemoteConfig] = React.useState<{
+        storeDomain: string
+        shopNo: string
+        accessToken: string
+    }>({
+        storeDomain: "",
+        shopNo: "",
+        accessToken: "",
+    })
+    const [configStatus, setConfigStatus] = React.useState<
+        "idle" | "loading" | "ready" | "error"
+    >("idle")
+    const [configMessage, setConfigMessage] = React.useState("")
     const [scriptStatus, setScriptStatus] = React.useState<
         "idle" | "loading" | "ready" | "error"
     >("idle")
@@ -763,6 +777,90 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
     }, [props.enabled])
 
     React.useEffect(() => {
+        const manualStoreDomain = props.storeDomain.trim()
+        const manualShopNo = props.shopNo.trim()
+        const manualAccessToken = props.accessToken.trim()
+        const backendUrl = props.backendUrl.trim()
+
+        if (!props.enabled) {
+            setRemoteConfig({
+                storeDomain: "",
+                shopNo: "",
+                accessToken: "",
+            })
+            setConfigStatus("idle")
+            setConfigMessage("")
+            return
+        }
+
+        if (manualStoreDomain && manualShopNo && manualAccessToken) {
+            setConfigStatus("ready")
+            setConfigMessage("")
+            return
+        }
+
+        if (!backendUrl) {
+            setConfigStatus("idle")
+            setConfigMessage("")
+            return
+        }
+
+        let isCancelled = false
+        setConfigStatus("loading")
+        setConfigMessage("")
+
+        window
+            .fetch(joinUrl(backendUrl, "/api/storefront/config"), {
+                method: "GET",
+            })
+            .then(async (response) => {
+                const result = await response
+                    .json()
+                    .catch(() => ({ ok: false, message: "Invalid JSON" }))
+
+                if (!response.ok) {
+                    throw new Error(
+                        String(result?.message || "Unable to load Cafe24 storefront config.")
+                    )
+                }
+
+                if (isCancelled) return
+
+                setRemoteConfig({
+                    storeDomain: String(result?.config?.storeDomain || "").trim(),
+                    shopNo: String(result?.config?.shopNo || "").trim(),
+                    accessToken: String(result?.config?.accessToken || "").trim(),
+                })
+                setConfigStatus("ready")
+            })
+            .catch((error) => {
+                if (isCancelled) return
+
+                setRemoteConfig({
+                    storeDomain: "",
+                    shopNo: "",
+                    accessToken: "",
+                })
+                setConfigStatus("error")
+                setConfigMessage(
+                    error instanceof Error
+                        ? error.message
+                        : "Unable to load Cafe24 storefront config."
+                )
+            })
+
+        return () => {
+            isCancelled = true
+        }
+    }, [
+        props.accessToken,
+        props.backendUrl,
+        props.enabled,
+        props.shopNo,
+        props.storeDomain,
+    ])
+
+    React.useEffect(() => {
         const container = containerRef.current
         const ids = idsRef.current
         if (!container || !ids) return
@@ -779,9 +877,11 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
             return
         }
 
-        const storeDomain = props.storeDomain.trim()
-        const shopNo = props.shopNo.trim()
-        const accessToken = props.accessToken.trim()
+        const storeDomain =
+            props.storeDomain.trim() || remoteConfig.storeDomain.trim()
+        const shopNo = props.shopNo.trim() || remoteConfig.shopNo.trim()
+        const accessToken =
+            props.accessToken.trim() || remoteConfig.accessToken.trim()
         const productHandle = props.productHandle.trim()
 
         if (!storeDomain || !shopNo || !accessToken || !productHandle) {
@@ -928,18 +1028,57 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
         props.enabled,
         props.productHandle,
         props.shopNo,
+        remoteConfig.accessToken,
+        remoteConfig.shopNo,
+        remoteConfig.storeDomain,
         scriptStatus,
         props.storeDomain,
     ])
 
+    const resolvedStoreDomain =
+        props.storeDomain.trim() || remoteConfig.storeDomain.trim()
+    const resolvedShopNo = props.shopNo.trim() || remoteConfig.shopNo.trim()
+    const resolvedAccessToken =
+        props.accessToken.trim() || remoteConfig.accessToken.trim()
     const isConfigured = Boolean(
-        props.storeDomain.trim() &&
-            props.shopNo.trim() &&
-            props.accessToken.trim() &&
+        resolvedStoreDomain &&
+            resolvedShopNo &&
+            resolvedAccessToken &&
             props.productHandle.trim()
     )
 
     if (!props.enabled) return null
+
+    if (configStatus === "loading" && !isConfigured) {
+        return (
+            <div
+                style={{
+                    ...cafe24NoticeStyle,
+                    fontFamily: props.bodyFontFamily,
+                    fontSize: props.bodyFontSize,
+                    lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
+                }}
+            >
+                Loading Cafe24 storefront config...
+            </div>
+        )
+    }
+
+    if (configStatus === "error" && !isConfigured) {
+        return (
+            <div
+                style={{
+                    ...cafe24NoticeStyle,
+                    fontFamily: props.bodyFontFamily,
+                    fontSize: props.bodyFontSize,
+                    lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
+                }}
+            >
+                {configMessage ||
+                    "Cafe24 storefront config failed to load from the backend."}
+            </div>
+        )
+    }
 
     if (!isConfigured) {
         return (
@@ -951,9 +1090,9 @@ function Cafe24CommerceBridge(props: Cafe24CommerceBridgeProps) {
                     lineHeight: `${Math.round(props.bodyFontSize * 1.6)}px`,
                 }}
             >
-                Add your Cafe24 `store-domain`, `shop-no`, `access-token`, and
-                product `handle` in Framer to enable the `Add to cart` and
-                `Buy now` buttons.
+                Add your Cafe24 `product handle` in Framer, then either supply
+                `store-domain`, `shop-no`, and `access-token` directly or add a
+                backend URL that exposes `/api/storefront/config`.
             </div>
         )
     }
@@ -1035,6 +1174,14 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
     const cafe24AccessToken = props.cafe24AccessToken?.trim() || ""
     const cafe24ProductHandle = props.cafe24ProductHandle?.trim() || ""
     const cafe24BuyNowLabel = props.cafe24BuyNowLabel?.trim() || "Buy now"
+    const hasCafe24WebComponentConfig = Boolean(
+        cafe24ProductHandle &&
+            (cafe24BackendUrl ||
+                (cafe24StoreDomain && cafe24ShopNo && cafe24AccessToken))
+    )
+    const hasCafe24BackendConfig = Boolean(
+        cafe24BackendUrl && cafe24ProductNo
+    )
     const title = props.title?.trim() || "REVERSO PUFFA"
     const description = props.description?.trim() || defaultDescription
     const price = props.price?.trim() || "$139"
@@ -1825,9 +1972,35 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                     })}
                                 </div>
 
-                                {useCafe24 &&
-                                cafe24BackendUrl &&
-                                cafe24ProductNo ? (
+                                {useCafe24 && hasCafe24WebComponentConfig ? (
+                                    <Cafe24CommerceBridge
+                                        enabled={useCafe24}
+                                        backendUrl={cafe24BackendUrl}
+                                        storeDomain={cafe24StoreDomain}
+                                        shopNo={cafe24ShopNo}
+                                        accessToken={cafe24AccessToken}
+                                        productHandle={cafe24ProductHandle}
+                                        addToCartLabel={buttonLabel}
+                                        buyNowLabel={cafe24BuyNowLabel}
+                                        bodyFontFamily={bodyFontFamily}
+                                        bodyFontSize={bodyFontSize}
+                                        buttonFontSize={buttonFontSize}
+                                        addToCartWidth={addToCartWidth}
+                                        addToCartFill={addToCartFill}
+                                        addToCartBorderColor={
+                                            addToCartBorderColor
+                                        }
+                                        addToCartBorderWidth={
+                                            addToCartBorderWidth
+                                        }
+                                        addToCartBorderRadius={
+                                            addToCartBorderRadius
+                                        }
+                                        addToCartTextColor={
+                                            addToCartTextColor
+                                        }
+                                    />
+                                ) : useCafe24 && hasCafe24BackendConfig ? (
                                     cafe24MemberId ? (
                                         <Cafe24BackendCommerceBridge
                                             enabled={useCafe24}
@@ -1904,6 +2077,7 @@ export default function MirrorShopComponent(props: Partial<MirrorShopProps>) {
                                 ) : useCafe24 ? (
                                     <Cafe24CommerceBridge
                                         enabled={useCafe24}
+                                        backendUrl={cafe24BackendUrl}
                                         storeDomain={cafe24StoreDomain}
                                         shopNo={cafe24ShopNo}
                                         accessToken={cafe24AccessToken}
@@ -2184,7 +2358,7 @@ addPropertyControls(MirrorShopComponent, {
     cafe24AccessToken: {
         type: ControlType.String,
         title: "Access Token",
-        placeholder: "storefront token",
+        placeholder: "optional if backend supplies it",
         defaultValue: "",
     },
     cafe24ProductHandle: {

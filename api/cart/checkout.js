@@ -63,6 +63,28 @@ function collectInterestingCartFields(value, path = "", depth = 0, acc = {}) {
     return acc
 }
 
+function describePayloadShape(value, depth = 0) {
+    if (depth > 4) return "[MaxDepth]"
+    if (value == null) return value
+
+    if (Array.isArray(value)) {
+        if (value.length <= 0) return []
+        return [describePayloadShape(value[0], depth + 1)]
+    }
+
+    if (typeof value !== "object") {
+        return typeof value
+    }
+
+    const shape = {}
+
+    for (const [key, nestedValue] of Object.entries(value)) {
+        shape[key] = describePayloadShape(nestedValue, depth + 1)
+    }
+
+    return shape
+}
+
 function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Origin", "*")
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -124,11 +146,18 @@ module.exports = async (req, res) => {
             const result = await createCart(item)
             const cartPayload = result?.cart || null
             const cartDebug = collectInterestingCartFields(cartPayload)
+            const cartResponseKeys =
+                cartPayload && typeof cartPayload === "object"
+                    ? Object.keys(cartPayload)
+                    : []
+            const cartResponseShape = describePayloadShape(cartPayload)
 
             results.push({
                 productNo: item.productNo,
                 resolvedVariantCode: result.resolvedVariantCode,
                 cartDebug,
+                cartResponseKeys,
+                cartResponseShape,
                 cart: cartPayload,
             })
         }

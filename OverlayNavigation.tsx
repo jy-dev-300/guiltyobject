@@ -20,12 +20,16 @@ type Props = {
     cafe24BackendUrl: string
     cafe24CartRedirectUrl: string
     cafe24BuyNowRedirectUrl: string
+    cafe24CartHandoffUrl: string
+    showCafe24Debug: boolean
     cartLabel: string
     shopLabel: string
+    accountLabel: string
     aboutLabel: string
     campaignLabel: string
     contactLabel: string
     shopLink: string
+    accountLink: string
     aboutLink: string
     campaignLink: string
     contactLink: string
@@ -44,134 +48,21 @@ type Props = {
     zIndex: number
 }
 
-type ShadowCartItem = {
-    productNo: string
-    variantCode: string
-    quantity: number
-    title: string
-    optionLabel: string
-    priceLabel: string
-    previewImage: string
-}
-
 function joinUrl(baseUrl: string, path: string): string {
     const normalizedBase = baseUrl.trim().replace(/\/+$/, "")
     const normalizedPath = path.startsWith("/") ? path : `/${path}`
     return `${normalizedBase}${normalizedPath}`
 }
 
-const shadowCartStorageKey = "mirror-shop-shadow-cart-v1"
-const shadowCartSyncStorageKey = "mirror-shop-shadow-cart-sync-v1"
-const shadowCartChangeEventName = "mirror-shop-shadow-cart-change"
-
-function readShadowCart(): ShadowCartItem[] {
-    if (typeof window === "undefined") return []
+function getUrlOrigin(url: string): string {
+    const trimmedUrl = url.trim()
+    if (!trimmedUrl) return ""
 
     try {
-        const rawValue = window.localStorage.getItem(shadowCartStorageKey)
-        if (!rawValue) return []
-
-        const parsed = JSON.parse(rawValue)
-        if (!Array.isArray(parsed)) return []
-
-        return parsed
-            .map((item) => ({
-                productNo: String(item?.productNo || "").trim(),
-                variantCode: String(item?.variantCode || "").trim(),
-                quantity: Math.max(1, Math.floor(Number(item?.quantity) || 1)),
-                title: String(item?.title || "").trim(),
-                optionLabel: String(item?.optionLabel || "").trim(),
-                priceLabel: String(item?.priceLabel || "").trim(),
-                previewImage: String(item?.previewImage || "").trim(),
-            }))
-            .filter((item) => Boolean(item.productNo))
+        return new URL(trimmedUrl).origin
     } catch (_error) {
-        return []
+        return ""
     }
-}
-
-function writeShadowCart(items: ShadowCartItem[]) {
-    if (typeof window === "undefined") return
-
-    window.localStorage.setItem(shadowCartStorageKey, JSON.stringify(items))
-    window.dispatchEvent(new Event(shadowCartChangeEventName))
-}
-
-function readShadowCartSyncSignature(): string {
-    if (typeof window === "undefined") return ""
-
-    return window.localStorage.getItem(shadowCartSyncStorageKey) || ""
-}
-
-function writeShadowCartSyncSignature(signature: string) {
-    if (typeof window === "undefined") return
-
-    window.localStorage.setItem(shadowCartSyncStorageKey, signature)
-}
-
-function clearShadowCartSyncSignature() {
-    if (typeof window === "undefined") return
-
-    window.localStorage.removeItem(shadowCartSyncStorageKey)
-}
-
-function getShadowCartItemKey(item: {
-    productNo: string
-    variantCode: string
-}) {
-    return `${item.productNo.trim()}::${item.variantCode.trim()}`
-}
-
-function getShadowCartSignature(items: ShadowCartItem[]): string {
-    return items
-        .map((item) => ({
-            productNo: item.productNo.trim(),
-            variantCode: item.variantCode.trim(),
-            quantity: Math.max(1, Math.floor(Number(item.quantity) || 1)),
-        }))
-        .sort((left, right) =>
-            getShadowCartItemKey(left).localeCompare(getShadowCartItemKey(right))
-        )
-        .map((item) => `${item.productNo}:${item.variantCode}:${item.quantity}`)
-        .join("|")
-}
-
-function parsePriceValue(priceLabel: string): number | null {
-    const normalized = priceLabel.replace(/,/g, "").trim()
-    const match = normalized.match(/-?\d+(?:\.\d+)?/)
-    if (!match) return null
-
-    const value = Number(match[0])
-    return Number.isFinite(value) ? value : null
-}
-
-function formatPriceValue(amount: number, sampleLabel: string): string {
-    const trimmedSample = sampleLabel.trim()
-    if (!trimmedSample) return String(amount)
-
-    if (trimmedSample.includes("KRW")) {
-        return `KRW ${Math.round(amount).toLocaleString("en-US")}`
-    }
-
-    if (trimmedSample.includes("$")) {
-        return `$${amount.toLocaleString("en-US", {
-            minimumFractionDigits: 0,
-            maximumFractionDigits: 2,
-        })}`
-    }
-
-    const prefixMatch = trimmedSample.match(/^[^\d-]+/)
-    const suffixMatch = trimmedSample.match(/[^\d]+$/)
-
-    if (prefixMatch) {
-        return `${prefixMatch[0]}${amount.toLocaleString("en-US")}`
-    }
-
-    if (suffixMatch) {
-        return `${amount.toLocaleString("en-US")}${suffixMatch[0]}`
-    }
-
-    return amount.toLocaleString("en-US")
 }
 
 type NavCafe24CartButtonProps = {
@@ -179,6 +70,8 @@ type NavCafe24CartButtonProps = {
     backendUrl: string
     cartRedirectUrl: string
     buyNowRedirectUrl: string
+    handoffUrl: string
+    showDebug: boolean
     label: string
     fontFamily: string
     fontSize: number
@@ -186,617 +79,31 @@ type NavCafe24CartButtonProps = {
 }
 
 function NavCafe24CartButton(props: NavCafe24CartButtonProps) {
-    const [isOpen, setIsOpen] = React.useState(false)
-    const [status, setStatus] = React.useState<
-        "idle" | "submitting" | "success" | "error"
-    >("idle")
-    const [items, setItems] = React.useState<ShadowCartItem[]>([])
-    const [cartCount, setCartCount] = React.useState(0)
-    const [message, setMessage] = React.useState("")
-    const [debugPayload, setDebugPayload] = React.useState("")
-    const [cartDebugSummary, setCartDebugSummary] = React.useState("")
-    const [pendingRedirectUrl, setPendingRedirectUrl] = React.useState("")
-
-    const hasBackend = Boolean(props.backendUrl.trim())
-
-    const syncCartCount = React.useCallback(() => {
-        const nextItems = readShadowCart()
-        setItems(nextItems)
-        const nextCount = nextItems.reduce(
-            (total, item) => total + item.quantity,
-            0
-        )
-        setCartCount(nextCount)
-    }, [])
-
-    React.useEffect(() => {
-        syncCartCount()
-
-        if (typeof window === "undefined") return
-
-        const handleStorage = (event: StorageEvent) => {
-            if (event.key && event.key !== shadowCartStorageKey) return
-            syncCartCount()
-        }
-        const handleShadowCartChange = () => {
-            syncCartCount()
-        }
-
-        window.addEventListener("storage", handleStorage)
-        window.addEventListener(
-            shadowCartChangeEventName,
-            handleShadowCartChange
-        )
-        return () => {
-            window.removeEventListener("storage", handleStorage)
-            window.removeEventListener(
-                shadowCartChangeEventName,
-                handleShadowCartChange
-            )
-        }
-    }, [syncCartCount])
-
-    React.useEffect(() => {
-        if (typeof document === "undefined") return
-
-        if (!isOpen) {
-            document.body.style.overflow = ""
-            return
-        }
-
-        document.body.style.overflow = "hidden"
-        return () => {
-            document.body.style.overflow = ""
-        }
-    }, [isOpen])
-
-    React.useEffect(() => {
-        if (typeof window === "undefined" || !isOpen) return
-
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                setIsOpen(false)
-            }
-        }
-
-        window.addEventListener("keydown", handleKeyDown)
-        return () => {
-            window.removeEventListener("keydown", handleKeyDown)
-        }
-    }, [isOpen])
-
-    const updateCartItems = React.useCallback((nextItems: ShadowCartItem[]) => {
-        writeShadowCart(nextItems)
-        clearShadowCartSyncSignature()
-        setItems(nextItems)
-        const nextCount = nextItems.reduce(
-            (total, item) => total + item.quantity,
-            0
-        )
-        setCartCount(nextCount)
-    }, [])
-
-    const handleRemoveItem = React.useCallback(
-        (targetItem: ShadowCartItem) => {
-            const nextItems = items.filter(
-                (item) =>
-                    getShadowCartItemKey(item) !== getShadowCartItemKey(targetItem)
-            )
-            updateCartItems(nextItems)
-        },
-        [items, updateCartItems]
-    )
-
-    const handleQuantityChange = React.useCallback(
-        (targetItem: ShadowCartItem, delta: number) => {
-            const nextItems = items
-                .map((item) => {
-                    if (
-                        getShadowCartItemKey(item) !== getShadowCartItemKey(targetItem)
-                    ) {
-                        return item
-                    }
-
-                    return {
-                        ...item,
-                        quantity: Math.max(1, item.quantity + delta),
-                    }
-                })
-                .filter((item) => item.quantity > 0)
-
-            updateCartItems(nextItems)
-        },
-        [items, updateCartItems]
-    )
-
-    const handleCheckout = React.useCallback(async () => {
-        if (!hasBackend || typeof window === "undefined") return
-
-        const itemsToSync = readShadowCart()
-        if (itemsToSync.length <= 0) {
-            setStatus("error")
-            setMessage("Add an item before checkout.")
-            return
-        }
-
-        syncCartCount()
-        const nextSignature = getShadowCartSignature(itemsToSync)
-        const lastSyncedSignature = readShadowCartSyncSignature()
-
-        let directRedirectUrl =
-            props.buyNowRedirectUrl.trim() || props.cartRedirectUrl.trim()
-
-        setStatus("submitting")
-        setMessage("")
-        setDebugPayload("")
-        setCartDebugSummary("")
-        setPendingRedirectUrl("")
-
-        if (!directRedirectUrl) {
-            try {
-                const response = await window.fetch(
-                    joinUrl(props.backendUrl, "/api/cart/urls"),
-                    {
-                        method: "GET",
-                    }
-                )
-                const result = await response.json().catch(() => ({ ok: false }))
-
-                if (response.ok) {
-                    directRedirectUrl =
-                        result?.urls?.checkoutUrl ||
-                        result?.urls?.cartUrl ||
-                        ""
-                }
-            } catch (_error) {
-                directRedirectUrl = ""
-            }
-        }
-
-        if (nextSignature && nextSignature === lastSyncedSignature) {
-            if (directRedirectUrl) {
-                setStatus("success")
-                setMessage("Cart already synced. Continue when you're ready.")
-                setPendingRedirectUrl(directRedirectUrl)
-                return
-            }
-        }
-
-        try {
-            const response = await window.fetch(
-                joinUrl(props.backendUrl, "/api/cart/checkout"),
-                {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        items: itemsToSync,
-                    }),
-                }
-            )
-
-            const result = await response
-                .json()
-                .catch(() => ({ ok: false, message: "Invalid JSON" }))
-
-            setDebugPayload(JSON.stringify(result, null, 2))
-
-            const nextCartDebugSummary = {
-                checkoutRedirectUrl:
-                    String(result?.checkoutRedirectUrl || "").trim() ||
-                    directRedirectUrl,
-                cartRedirectUrl: String(result?.cartRedirectUrl || "").trim(),
-                items: Array.isArray(result?.results)
-                    ? result.results
-                          .map((entry) => {
-                              const nextItemCartDebug =
-                                  entry?.cartDebug &&
-                                  typeof entry.cartDebug === "object"
-                                      ? entry.cartDebug
-                                      : null
-                              return {
-                                  productNo: String(
-                                      entry?.productNo || ""
-                                  ).trim(),
-                                  resolvedVariantCode: String(
-                                      entry?.resolvedVariantCode || ""
-                                  ).trim(),
-                                  cartDebug: nextItemCartDebug,
-                                  note:
-                                      nextItemCartDebug &&
-                                      Object.keys(nextItemCartDebug).length > 0
-                                          ? ""
-                                          : "No item-level cart/session fields were returned by Cafe24 for this item.",
-                              }
-                          })
-                          .filter(
-                              (entry) =>
-                                  Boolean(entry.productNo) ||
-                                  Boolean(entry.resolvedVariantCode) ||
-                                  Boolean(entry.cartDebug) ||
-                                  Boolean(entry.note)
-                          )
-                    : [],
-            }
-
-            if (
-                nextCartDebugSummary.checkoutRedirectUrl ||
-                nextCartDebugSummary.cartRedirectUrl ||
-                nextCartDebugSummary.items.length > 0
-            ) {
-                setCartDebugSummary(
-                    JSON.stringify(nextCartDebugSummary, null, 2)
-                )
-            }
-
-            if (!response.ok) {
-                throw new Error(result?.message || "Cafe24 cart sync failed.")
-            }
-
-            writeShadowCartSyncSignature(nextSignature)
-
-            const nextRedirectUrl =
-                result?.checkoutRedirectUrl ||
-                directRedirectUrl ||
-                result?.cartRedirectUrl ||
-                props.buyNowRedirectUrl.trim() ||
-                props.cartRedirectUrl.trim()
-
-            if (nextRedirectUrl) {
-                setStatus("success")
-                setMessage("Cafe24 cart is ready. Review the response below, then continue.")
-                setPendingRedirectUrl(nextRedirectUrl)
-                return
-            }
-
-            setStatus("success")
-            setMessage("Cafe24 cart is ready.")
-        } catch (error) {
-            clearShadowCartSyncSignature()
-            setStatus("error")
-            setMessage(
-                error instanceof Error
-                    ? error.message
-                    : "Unable to open the Cafe24 cart."
-            )
-            setDebugPayload((current) =>
-                current ||
-                JSON.stringify(
-                    {
-                        ok: false,
-                        message:
-                            error instanceof Error
-                                ? error.message
-                                : "Unable to open the Cafe24 cart.",
-                    },
-                    null,
-                    2
-                )
-            )
-            setCartDebugSummary((current) => current || "")
-
-            if (directRedirectUrl) {
-                setPendingRedirectUrl(directRedirectUrl)
-            }
-        }
-    }, [
-        hasBackend,
-        props.backendUrl,
-        props.buyNowRedirectUrl,
-        props.cartRedirectUrl,
-        syncCartCount,
-    ])
-
     if (!props.enabled) return null
 
+    const directCartUrl =
+        props.cartRedirectUrl.trim() || props.buyNowRedirectUrl.trim()
+
     return (
-        <>
-            <button
-                type="button"
-                disabled={false}
-                onClick={() => {
-                    syncCartCount()
-                    setMessage("")
-                    setDebugPayload("")
-                    setCartDebugSummary("")
-                    setPendingRedirectUrl("")
-                    setIsOpen(true)
-                }}
-                style={{
-                    ...navButtonStyle,
+        <button
+            type="button"
+            disabled={!directCartUrl}
+            onClick={() => {
+                if (!directCartUrl || typeof window === "undefined") return
+                window.location.href = directCartUrl
+            }}
+            style={{
+                ...navButtonStyle,
                 fontFamily: props.fontFamily,
                 fontSize: props.fontSize,
                 color: props.textColor,
-                    opacity: 1,
-                }}
-                title={
-                    message || "Open cart"
-                }
-            >
-                {props.label}
-                {cartCount > 0 ? ` (${cartCount})` : ""}
-            </button>
-
-            {isOpen ? (
-                <>
-                    <button
-                        type="button"
-                        aria-label="Close cart"
-                        onClick={() => {
-                            setIsOpen(false)
-                        }}
-                        style={cartBackdropStyle}
-                    />
-
-                    <div style={cartDrawerStyle}>
-                        <div style={cartDrawerHeaderStyle}>
-                            <div
-                                style={{
-                                    ...cartDrawerTitleStyle,
-                                    fontFamily: props.fontFamily,
-                                }}
-                            >
-                                {props.label}
-                                {cartCount > 0 ? ` (${cartCount})` : ""}
-                            </div>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setIsOpen(false)
-                                }}
-                                style={cartCloseButtonStyle}
-                                aria-label="Close cart"
-                            >
-                                ×
-                            </button>
-                        </div>
-
-                        <div style={cartDrawerBodyStyle}>
-                            {debugPayload ? (
-                                <div style={cartDebugNoticeStyle}>
-                                    Checkout response captured below. The drawer will stay open until you press continue.
-                                </div>
-                            ) : null}
-
-                            <div
-                                style={{
-                                    ...cartSectionLabelStyle,
-                                    fontFamily: props.fontFamily,
-                                }}
-                            >
-                                Products
-                            </div>
-
-                            {items.length > 0 ? (
-                                items.map((item) => {
-                                    const unitPrice =
-                                        parsePriceValue(item.priceLabel) ?? 0
-                                    const lineTotal = unitPrice * item.quantity
-                                    const lineTotalLabel =
-                                        item.priceLabel && unitPrice > 0
-                                            ? formatPriceValue(
-                                                  lineTotal,
-                                                  item.priceLabel
-                                              )
-                                            : ""
-
-                                    return (
-                                        <div
-                                            key={getShadowCartItemKey(item)}
-                                            style={cartItemStyle}
-                                        >
-                                            <div style={cartItemMediaStyle}>
-                                                {item.previewImage ? (
-                                                    <img
-                                                        src={item.previewImage}
-                                                        alt={item.title}
-                                                        style={cartItemImageStyle}
-                                                    />
-                                                ) : null}
-                                            </div>
-
-                                            <div style={cartItemContentStyle}>
-                                                <div
-                                                    style={{
-                                                        ...cartItemTitleStyle,
-                                                        fontFamily:
-                                                            props.fontFamily,
-                                                    }}
-                                                >
-                                                    {item.title || "Product"}
-                                                </div>
-                                                {item.priceLabel ? (
-                                                    <div
-                                                        style={cartItemPriceStyle}
-                                                    >
-                                                        {item.priceLabel}
-                                                    </div>
-                                                ) : null}
-                                                {item.optionLabel ? (
-                                                    <div
-                                                        style={cartItemOptionStyle}
-                                                    >
-                                                        {item.optionLabel}
-                                                    </div>
-                                                ) : null}
-
-                                                <div
-                                                    style={
-                                                        cartQuantityControlsStyle
-                                                    }
-                                                >
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            handleQuantityChange(
-                                                                item,
-                                                                -1
-                                                            )
-                                                        }}
-                                                        style={
-                                                            cartQuantityButtonStyle
-                                                        }
-                                                    >
-                                                        −
-                                                    </button>
-                                                    <div
-                                                        style={
-                                                            cartQuantityValueStyle
-                                                        }
-                                                    >
-                                                        {item.quantity}
-                                                    </div>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => {
-                                                            handleQuantityChange(
-                                                                item,
-                                                                1
-                                                            )
-                                                        }}
-                                                        style={
-                                                            cartQuantityButtonStyle
-                                                        }
-                                                    >
-                                                        +
-                                                    </button>
-                                                </div>
-
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        handleRemoveItem(item)
-                                                    }}
-                                                    style={cartRemoveButtonStyle}
-                                                >
-                                                    Remove
-                                                </button>
-
-                                                {lineTotalLabel ? (
-                                                    <div
-                                                        style={
-                                                            cartLineTotalStyle
-                                                        }
-                                                    >
-                                                        Total: {lineTotalLabel}
-                                                    </div>
-                                                ) : null}
-                                            </div>
-                                        </div>
-                                    )
-                                })
-                            ) : (
-                                <div style={cartEmptyStateStyle}>
-                                    Your cart is empty.
-                                </div>
-                            )}
-                        </div>
-
-                        <div style={cartFooterStyle}>
-                            <div style={cartSubtotalRowStyle}>
-                                <span>Subtotal</span>
-                                <span>
-                                    {(() => {
-                                        const pricedItems = items
-                                            .map((item) => ({
-                                                value:
-                                                    parsePriceValue(
-                                                        item.priceLabel
-                                                    ) ?? 0,
-                                                sample: item.priceLabel,
-                                                quantity: item.quantity,
-                                            }))
-                                            .filter((item) => item.value > 0)
-
-                                        if (pricedItems.length <= 0) {
-                                            return "Calculated at checkout"
-                                        }
-
-                                        const subtotal = pricedItems.reduce(
-                                            (total, item) =>
-                                                total +
-                                                item.value * item.quantity,
-                                            0
-                                        )
-
-                                        return formatPriceValue(
-                                            subtotal,
-                                            pricedItems[0].sample
-                                        )
-                                    })()}
-                                </span>
-                            </div>
-
-                            {message ? (
-                                <div style={cartMessageStyle}>{message}</div>
-                            ) : null}
-
-                            {cartDebugSummary ? (
-                                <div style={cartDebugPanelStyle}>
-                                    <div style={cartDebugLabelStyle}>
-                                        Cart URI and session fields
-                                    </div>
-                                    <pre style={cartDebugPreStyle}>
-                                        {cartDebugSummary}
-                                    </pre>
-                                </div>
-                            ) : null}
-
-                            {debugPayload ? (
-                                <div style={cartDebugPanelStyle}>
-                                    <div style={cartDebugLabelStyle}>
-                                        Checkout response
-                                    </div>
-                                    <pre style={cartDebugPreStyle}>
-                                        {debugPayload}
-                                    </pre>
-                                </div>
-                            ) : null}
-
-                            {pendingRedirectUrl ? (
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        if (typeof window === "undefined") return
-                                        setIsOpen(false)
-                                        window.location.href = pendingRedirectUrl
-                                    }}
-                                    style={cartContinueButtonStyle}
-                                >
-                                    Continue to Cafe24
-                                </button>
-                            ) : null}
-
-                            <button
-                                type="button"
-                                disabled={
-                                    !hasBackend ||
-                                    status === "submitting" ||
-                                    items.length <= 0
-                                }
-                                onClick={() => {
-                                    void handleCheckout()
-                                }}
-                                style={{
-                                    ...cartCheckoutButtonStyle,
-                                    opacity:
-                                        !hasBackend ||
-                                        status === "submitting" ||
-                                        items.length <= 0
-                                            ? 0.55
-                                            : 1,
-                                }}
-                            >
-                                {status === "submitting"
-                                    ? "Opening..."
-                                    : "Checkout"}
-                            </button>
-                        </div>
-                    </div>
-                </>
-            ) : null}
-        </>
+                opacity: directCartUrl ? 1 : 0.45,
+                cursor: directCartUrl ? "pointer" : "not-allowed",
+            }}
+            title={directCartUrl ? "Open Cafe24 cart" : "Set a Cafe24 cart URL"}
+        >
+            {props.label}
+        </button>
     )
 }
 
@@ -816,12 +123,16 @@ export default function OverlayNavigationSubnavFixed(props: Partial<Props>) {
         cafe24BackendUrl = "",
         cafe24CartRedirectUrl = "",
         cafe24BuyNowRedirectUrl = "",
+        cafe24CartHandoffUrl = "",
+        showCafe24Debug = false,
         cartLabel = "CART",
         shopLabel = "SHOP",
+        accountLabel = "ACCOUNT",
         aboutLabel = "ABOUT",
         campaignLabel = "CAMPAIGN",
         contactLabel = "CONTACT",
         shopLink = "",
+        accountLink = "",
         aboutLink = "",
         campaignLink = "",
         contactLink = "",
@@ -953,6 +264,21 @@ export default function OverlayNavigationSubnavFixed(props: Partial<Props>) {
                 <button
                     type="button"
                     onMouseEnter={scheduleClose}
+                    onClick={() => go(accountLink)}
+                    style={{
+                        ...navButtonStyle,
+                        fontFamily: navFontFamily,
+                        marginRight: gap,
+                        fontSize,
+                        color: textColor,
+                    }}
+                >
+                    {accountLabel}
+                </button>
+
+                <button
+                    type="button"
+                    onMouseEnter={scheduleClose}
                     onClick={() => go(aboutLink)}
                     style={{
                         ...navButtonStyle,
@@ -1006,6 +332,8 @@ export default function OverlayNavigationSubnavFixed(props: Partial<Props>) {
                         backendUrl={cafe24BackendUrl}
                         cartRedirectUrl={cafe24CartRedirectUrl}
                         buyNowRedirectUrl={cafe24BuyNowRedirectUrl}
+                        handoffUrl={cafe24CartHandoffUrl}
+                        showDebug={showCafe24Debug}
                         label={cartLabel}
                         fontFamily={navFontFamily}
                         fontSize={fontSize}
@@ -1094,271 +422,6 @@ const logoButtonStyle: React.CSSProperties = {
     cursor: "pointer",
 }
 
-const cartBackdropStyle: React.CSSProperties = {
-    position: "fixed",
-    inset: 0,
-    border: "none",
-    background: "rgba(0, 0, 0, 0.34)",
-    padding: 0,
-    margin: 0,
-    cursor: "pointer",
-    zIndex: 999997,
-}
-
-const cartDrawerStyle: React.CSSProperties = {
-    position: "fixed",
-    top: 0,
-    right: 0,
-    width: "clamp(320px, 25vw, 420px)",
-    maxWidth: "92vw",
-    height: "100vh",
-    background: "#ffffff",
-    zIndex: 999998,
-    display: "flex",
-    flexDirection: "column",
-    boxShadow: "-18px 0 40px rgba(0, 0, 0, 0.12)",
-}
-
-const cartDrawerHeaderStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "22px 20px",
-    borderBottom: "1px solid rgba(0, 0, 0, 0.12)",
-}
-
-const cartDrawerTitleStyle: React.CSSProperties = {
-    fontSize: 18,
-    lineHeight: "22px",
-    textTransform: "uppercase",
-}
-
-const cartCloseButtonStyle: React.CSSProperties = {
-    appearance: "none",
-    border: "none",
-    background: "transparent",
-    padding: 0,
-    margin: 0,
-    fontSize: 30,
-    lineHeight: "30px",
-    cursor: "pointer",
-    color: "#111111",
-}
-
-const cartDrawerBodyStyle: React.CSSProperties = {
-    flex: 1,
-    overflowY: "auto",
-    padding: "18px 20px 0",
-}
-
-const cartSectionLabelStyle: React.CSSProperties = {
-    fontSize: 12,
-    lineHeight: "16px",
-    letterSpacing: "0.06em",
-    textTransform: "uppercase",
-    color: "#555555",
-    marginBottom: 14,
-}
-
-const cartItemStyle: React.CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "96px minmax(0, 1fr)",
-    gap: 16,
-    padding: "0 0 20px",
-    marginBottom: 20,
-    borderBottom: "1px solid rgba(0, 0, 0, 0.1)",
-}
-
-const cartItemMediaStyle: React.CSSProperties = {
-    width: 96,
-    height: 120,
-    background: "#f4f4f1",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    overflow: "hidden",
-}
-
-const cartItemImageStyle: React.CSSProperties = {
-    width: "100%",
-    height: "100%",
-    objectFit: "cover",
-    display: "block",
-}
-
-const cartItemContentStyle: React.CSSProperties = {
-    minWidth: 0,
-    display: "flex",
-    flexDirection: "column",
-    gap: 8,
-}
-
-const cartItemTitleStyle: React.CSSProperties = {
-    fontSize: 16,
-    lineHeight: "20px",
-    color: "#1a1a1a",
-}
-
-const cartItemPriceStyle: React.CSSProperties = {
-    fontSize: 15,
-    lineHeight: "19px",
-    color: "#111111",
-}
-
-const cartItemOptionStyle: React.CSSProperties = {
-    fontSize: 13,
-    lineHeight: "17px",
-    color: "#666666",
-}
-
-const cartQuantityControlsStyle: React.CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "36px 52px 36px",
-    width: "fit-content",
-    border: "1px solid rgba(0, 0, 0, 0.14)",
-    marginTop: 2,
-}
-
-const cartQuantityButtonStyle: React.CSSProperties = {
-    appearance: "none",
-    border: "none",
-    background: "#ffffff",
-    padding: 0,
-    height: 36,
-    cursor: "pointer",
-    fontSize: 22,
-    lineHeight: "36px",
-    color: "#111111",
-}
-
-const cartQuantityValueStyle: React.CSSProperties = {
-    height: 36,
-    display: "grid",
-    placeItems: "center",
-    borderLeft: "1px solid rgba(0, 0, 0, 0.14)",
-    borderRight: "1px solid rgba(0, 0, 0, 0.14)",
-    fontSize: 14,
-    color: "#111111",
-}
-
-const cartRemoveButtonStyle: React.CSSProperties = {
-    appearance: "none",
-    border: "none",
-    background: "transparent",
-    padding: 0,
-    margin: 0,
-    width: "fit-content",
-    cursor: "pointer",
-    fontSize: 14,
-    lineHeight: "18px",
-    color: "#1a1a1a",
-    textDecoration: "underline",
-    textUnderlineOffset: "2px",
-}
-
-const cartLineTotalStyle: React.CSSProperties = {
-    marginTop: 2,
-    paddingTop: 10,
-    borderTop: "1px solid rgba(0, 0, 0, 0.08)",
-    fontSize: 13,
-    lineHeight: "17px",
-    color: "#111111",
-    textTransform: "uppercase",
-}
-
-const cartEmptyStateStyle: React.CSSProperties = {
-    padding: "24px 0",
-    fontSize: 15,
-    lineHeight: "22px",
-    color: "#666666",
-}
-
-const cartFooterStyle: React.CSSProperties = {
-    borderTop: "1px solid rgba(0, 0, 0, 0.12)",
-    padding: "18px 20px 20px",
-    display: "flex",
-    flexDirection: "column",
-    gap: 14,
-    background: "#ffffff",
-}
-
-const cartSubtotalRowStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 16,
-    fontSize: 18,
-    lineHeight: "22px",
-    color: "#111111",
-    textTransform: "uppercase",
-}
-
-const cartMessageStyle: React.CSSProperties = {
-    fontSize: 13,
-    lineHeight: "18px",
-    color: "#444444",
-}
-
-const cartCheckoutButtonStyle: React.CSSProperties = {
-    appearance: "none",
-    border: "none",
-    background: "#000000",
-    color: "#ffffff",
-    width: "100%",
-    minHeight: 52,
-    cursor: "pointer",
-    fontSize: 20,
-    lineHeight: "24px",
-    textTransform: "uppercase",
-}
-
-const cartDebugPanelStyle: React.CSSProperties = {
-    border: "1px solid rgba(0, 0, 0, 0.12)",
-    background: "#f7f7f4",
-    padding: "12px",
-}
-
-const cartDebugNoticeStyle: React.CSSProperties = {
-    marginBottom: 16,
-    padding: "12px 14px",
-    background: "#fff6df",
-    border: "1px solid rgba(0, 0, 0, 0.12)",
-    fontSize: 13,
-    lineHeight: "18px",
-    color: "#463200",
-}
-
-const cartDebugLabelStyle: React.CSSProperties = {
-    fontSize: 12,
-    lineHeight: "16px",
-    textTransform: "uppercase",
-    color: "#555555",
-    marginBottom: 8,
-}
-
-const cartDebugPreStyle: React.CSSProperties = {
-    margin: 0,
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    fontSize: 11,
-    lineHeight: "16px",
-    color: "#111111",
-    fontFamily: "monospace",
-}
-
-const cartContinueButtonStyle: React.CSSProperties = {
-    appearance: "none",
-    border: "1px solid #111111",
-    background: "#ffffff",
-    color: "#111111",
-    width: "100%",
-    minHeight: 48,
-    cursor: "pointer",
-    fontSize: 16,
-    lineHeight: "20px",
-    textTransform: "uppercase",
-}
-
 OverlayNavigationSubnavFixed.defaultProps = {
     logo: { src: "", alt: "Logo" },
     logoSize: 120,
@@ -1368,12 +431,16 @@ OverlayNavigationSubnavFixed.defaultProps = {
     cafe24BackendUrl: "",
     cafe24CartRedirectUrl: "",
     cafe24BuyNowRedirectUrl: "",
+    cafe24CartHandoffUrl: "",
+    showCafe24Debug: false,
     cartLabel: "CART",
     shopLabel: "SHOP",
+    accountLabel: "ACCOUNT",
     aboutLabel: "ABOUT",
     campaignLabel: "CAMPAIGN",
     contactLabel: "CONTACT",
     shopLink: "",
+    accountLink: "",
     aboutLink: "",
     campaignLink: "",
     contactLink: "",
@@ -1437,10 +504,26 @@ addPropertyControls(OverlayNavigationSubnavFixed, {
         placeholder: "https://your-store.com/order/orderform.html",
         defaultValue: "",
     },
+    cafe24CartHandoffUrl: {
+        type: ControlType.String,
+        title: "Handoff URL",
+        placeholder: "https://your-store.com/cart-handoff.html",
+        defaultValue: "",
+    },
+    showCafe24Debug: {
+        type: ControlType.Boolean,
+        title: "Show Debug",
+        defaultValue: false,
+    },
     cartLabel: {
         type: ControlType.String,
         title: "Cart Label",
         defaultValue: "CART",
+    },
+    accountLabel: {
+        type: ControlType.String,
+        title: "Account Label",
+        defaultValue: "ACCOUNT",
     },
     dropdownFontFamily: {
         type: ControlType.String,
@@ -1470,6 +553,11 @@ addPropertyControls(OverlayNavigationSubnavFixed, {
     shopLink: {
         type: ControlType.String,
         title: "Shop Link",
+        defaultValue: "",
+    },
+    accountLink: {
+        type: ControlType.String,
+        title: "Account Link",
         defaultValue: "",
     },
     aboutLink: {

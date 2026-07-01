@@ -1,5 +1,8 @@
 todo
 
+switch to Cafe24 Web Components flow instead of cart-handoff page
+configure MirrorShopComponent with store-domain, shop-no, access-token, and product handle
+build Cafe24 cart-handoff.html loading page: logo only, auto-add basket items, auto-redirect to cart, 8-10s fallback timeout
 design cafe24 checkout page.
 put logo in cafe24 checkout page link to Framer
 hide all other logos 

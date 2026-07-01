@@ -1,4 +1,4 @@
-const { getCafe24Urls } = require("../lib/cafe24")
+const { getCafe24StorefrontConfig } = require("../../lib/cafe24")
 
 function setCorsHeaders(res) {
     res.setHeader("Access-Control-Allow-Origin", "*")
@@ -19,11 +19,20 @@ module.exports = async (req, res) => {
         return
     }
 
-    res.status(200).json({
-        ok: true,
-        routes: {
-            ...getCafe24Urls(),
-            storefrontConfigPath: "/api/storefront/config",
-        },
-    })
+    try {
+        const config = await getCafe24StorefrontConfig()
+
+        res.status(200).json({
+            ok: true,
+            config,
+        })
+    } catch (error) {
+        res.status(500).json({
+            ok: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Unable to load Cafe24 storefront config.",
+        })
+    }
 }
