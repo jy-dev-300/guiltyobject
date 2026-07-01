@@ -43,6 +43,171 @@ function escapeHtml(value) {
         .replace(/>/g, "&gt;")
 }
 
+function getBasicAuthorizationHeader(clientId, clientSecret) {
+    return `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`
+}
+
+async function parseResponsePayload(response) {
+    const rawText = await response.text()
+
+    if (!rawText) {
+        return {
+            rawText: "",
+            payload: null,
+        }
+    }
+
+    try {
+        return {
+            rawText,
+            payload: JSON.parse(rawText),
+        }
+    } catch (_error) {
+        return {
+            rawText,
+            payload: null,
+        }
+    }
+}
+
+async function tryTokenExchange({
+    code,
+    clientId,
+    clientSecret,
+    redirectUri,
+}) {
+    const attempts = [
+        {
+            label: "basic-auth-with-redirect-uri",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Accept: "application/json",
+                Authorization: getBasicAuthorizationHeader(
+                    clientId,
+                    clientSecret
+                ),
+            },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code,
+                redirect_uri: redirectUri,
+            }).toString(),
+        },
+        {
+            label: "basic-auth-without-redirect-uri",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Accept: "application/json",
+                Authorization: getBasicAuthorizationHeader(
+                    clientId,
+                    clientSecret
+                ),
+            },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code,
+            }).toString(),
+        },
+        {
+            label: "form-client-credentials",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Accept: "application/json",
+            },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code,
+                client_id: clientId,
+                client_secret: clientSecret,
+                redirect_uri: redirectUri,
+            }).toString(),
+        },
+        {
+            label: "form-client-credentials-without-redirect-uri",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Accept: "application/json",
+            },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code,
+                client_id: clientId,
+                client_secret: clientSecret,
+            }).toString(),
+        },
+        {
+            label: "basic-auth-with-mall-id",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Accept: "application/json",
+                Authorization: getBasicAuthorizationHeader(
+                    clientId,
+                    clientSecret
+                ),
+            },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code,
+                redirect_uri: redirectUri,
+                mall_id: getMallId(),
+            }).toString(),
+        },
+        {
+            label: "form-with-mall-id",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                Accept: "application/json",
+            },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code,
+                client_id: clientId,
+                client_secret: clientSecret,
+                redirect_uri: redirectUri,
+                mall_id: getMallId(),
+            }).toString(),
+        },
+    ]
+
+    const failures = []
+
+    for (const attempt of attempts) {
+        const response = await fetch(getTokenUrl(), {
+            method: "POST",
+            headers: attempt.headers,
+            body: attempt.body,
+        })
+
+        const { payload, rawText } = await parseResponsePayload(response)
+
+        if (response.ok) {
+            return {
+                payload,
+                strategy: attempt.label,
+            }
+        }
+
+        failures.push({
+            strategy: attempt.label,
+            status: response.status,
+            detail:
+                payload?.error_description ||
+                payload?.error?.message ||
+                payload?.error ||
+                payload?.message ||
+                rawText ||
+                "Cafe24 OAuth token exchange failed.",
+        })
+    }
+
+    const error = new Error(
+        failures[failures.length - 1]?.detail ||
+            "Cafe24 OAuth token exchange failed."
+    )
+    error.failures = failures
+    throw error
+}
+
 module.exports = async (req, res) => {
     const code = String(req.query?.code || "").trim()
     const oauthError = String(req.query?.error || "").trim()
@@ -99,35 +264,12 @@ module.exports = async (req, res) => {
         const clientId = getRequiredEnv("CAFE24_CLIENT_ID")
         const clientSecret = getRequiredEnv("CAFE24_CLIENT_SECRET")
         const redirectUri = getRedirectUri(req)
-
-        const params = new URLSearchParams({
-            grant_type: "authorization_code",
+        const { payload, strategy } = await tryTokenExchange({
             code,
-            client_id: clientId,
-            client_secret: clientSecret,
-            redirect_uri: redirectUri,
+            clientId,
+            clientSecret,
+            redirectUri,
         })
-
-        const response = await fetch(getTokenUrl(), {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-                Accept: "application/json",
-            },
-            body: params.toString(),
-        })
-
-        const payload = await response.json().catch(() => null)
-
-        if (!response.ok) {
-            const detail =
-                payload?.error_description ||
-                payload?.error?.message ||
-                payload?.error ||
-                payload?.message ||
-                "Cafe24 OAuth token exchange failed."
-            throw new Error(detail)
-        }
 
         res.status(200).send(`
 <!doctype html>
@@ -147,6 +289,7 @@ module.exports = async (req, res) => {
     <main>
       <h1>Cafe24 OAuth complete</h1>
       <p>Copy the values below into your Vercel environment variables before testing the Framer button.</p>
+      <p>Successful token exchange strategy: <code>${escapeHtml(strategy)}</code></p>
       <p>Set these in Vercel:</p>
       <p><code>CAFE24_REFRESH_TOKEN=${escapeHtml(payload?.refresh_token || "")}</code></p>
       <p><code>CAFE24_REFRESH_TOKEN_EXPIRES_AT=${escapeHtml(payload?.refresh_token_expires_at || "")}</code></p>
@@ -159,6 +302,14 @@ module.exports = async (req, res) => {
   </body>
 </html>`)
     } catch (error) {
+        const failureDetails = Array.isArray(error?.failures)
+            ? error.failures
+                  .map(
+                      (failure) =>
+                          `${failure.strategy} (${failure.status}): ${failure.detail}`
+                  )
+                  .join("\n")
+            : ""
         res.status(500).send(`
 <!doctype html>
 <html lang="en">
@@ -176,6 +327,14 @@ module.exports = async (req, res) => {
     <main>
       <h1>Cafe24 OAuth token exchange failed</h1>
       <p><code>${escapeHtml(error instanceof Error ? error.message : "Unknown error")}</code></p>
+      <p>Redirect URI used:</p>
+      <p><code>${escapeHtml(getRedirectUri(req))}</code></p>
+      ${
+          failureDetails
+              ? `<p>Attempt details:</p><pre>${escapeHtml(failureDetails)}</pre>`
+              : ""
+      }
+      <p>If this looks like a redirect mismatch, set <code>CAFE24_OAUTH_REDIRECT_URI</code> in Vercel to the exact URI registered in Cafe24.</p>
     </main>
   </body>
 </html>`)
